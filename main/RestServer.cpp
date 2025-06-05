@@ -1,5 +1,6 @@
 #include <esp_http_server.h>
 #include <esp_log.h>
+#include "esp_timer.h"
 #include <string>
 #include <string.h>
 #include <iostream>
@@ -84,6 +85,12 @@ static esp_err_t general_info_get_handler(httpd_req_t *req) {
     cJSON_AddBoolToObject(mode, "working", powerStatus == POWER_STATUS_ON);
     cJSON_AddBoolToObject(mode, "programming", displayBlinking);
     cJSON_AddItemToObject(data, "mode", mode);
+
+    uint64_t time_us = esp_timer_get_time();
+    uint32_t uptime_sec = (uint32_t)(time_us / 1000000ULL);
+    cJSON *system = cJSON_CreateObject();
+    cJSON_AddNumberToObject(system, "uptime_seconds", uptime_sec);
+    cJSON_AddItemToObject(data, "system", system);
 
     cJSON_AddItemToObject(root, "data", data);
     
@@ -179,6 +186,10 @@ static esp_err_t debug_get_handler(httpd_req_t *req) {
     cJSON_AddBoolToObject(data, "wifiReconnecting", wifiReconnecting);
     cJSON_AddBoolToObject(data, "readingMaster", readingMaster);
     cJSON_AddBoolToObject(data, "sendingKeyCode", sendingKeyCode);
+
+    uint64_t time_us = esp_timer_get_time();
+    uint32_t uptime_sec = (uint32_t)(time_us / 1000000ULL);
+    cJSON_AddNumberToObject(data, "uptime_seconds", uptime_sec);
     
     cJSON_AddItemToObject(root, "data", data);
     
