@@ -486,7 +486,7 @@ void RTOS_2(void *p) {
 
     while(1) { 
         if (removeWifiConfig) {            
-            wifi_manager_clear_wifi_configuration();
+            //wifi_manager_clear_wifi_configuration();
             reset_esp(NULL);
         }
         
@@ -731,7 +731,7 @@ extern "C" void app_main(void)
         start_rest_server(8080);
     }
     else {
-        wifi_manager_set_callback(WM_EVENT_WIFI_CONFIG_SAVED, &reset_esp);
+        //wifi_manager_set_callback(WM_EVENT_WIFI_CONFIG_SAVED, &reset_esp);
         configureWifiTask();
     }
 
