@@ -1,3 +1,26 @@
+This is a fork of https://github.com/jressel01/intex-swg-iot
+- fixed the build for newer ESP IDF versions up to 4.x (5.x will not work)
+- removed Home Assistant NodeRED + MQTT workflow
+- created new HomeAssistant Plugin at https://github.com/NemoN/ha-intex-swg (HACS)
+
+# Build notes
+
+ESP IDF Version: https://github.com/espressif/esp-idf/releases/tag/v4.4.8
+```
+git clone -b v4.4.8 --recursive https://github.com/espressif/esp-idf.git esp-idf-v4.4.8
+cd esp-idf-v4.4.8/
+./install.sh esp32
+. ./export.sh
+```
+
+```
+git clone https://github.com/NemoN/intex-swg-iot.git
+cd intex-swg-iot/
+git checkout esp-idf-4.x
+idf.py build
+idf.py flash
+```
+
 # Intex Salt Water Chlorine Generators (SWG) 
 
 You need SWG with 16Pin (TM1650) Chip on the Display Board. It will not work with the 18 Pin Pic. We work on it
