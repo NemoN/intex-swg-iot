@@ -6,8 +6,8 @@ extern "C" {
 #endif
 
     void systemRebootTask(void * parameter);
-    void start_rest_server(unsigned int port);
-    void stop_webserver();
+    void start_rest_server();
+    void register_server_uri_handlers();
 
 #ifdef __cplusplus
 }

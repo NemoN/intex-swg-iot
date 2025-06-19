@@ -6,7 +6,6 @@
 #include <iostream>
 #include "cJSON.h"
 
-
 #include "IntexSWG.h"
 #include "utils.h"
 #include "RestServer.h"
@@ -17,12 +16,10 @@
 #include <sys/param.h>
 #include "esp_ota_ops.h"
 #include "freertos/event_groups.h"
-#include "OTAServer.h"
+//#include "OTAServer.h"
 /********************************* OTA *******************************************/
 
-
 using namespace std;
-
 
 /********************************* OTA *******************************************/
 // Embedded Files. To add or remove make changes is component.mk file as well. 
@@ -33,7 +30,6 @@ extern const uint8_t favicon_ico_end[]   asm("_binary_favicon_ico_end");
 extern const uint8_t jquery_3_4_1_min_js_start[] asm("_binary_jquery_3_4_1_min_js_start");
 extern const uint8_t jquery_3_4_1_min_js_end[]   asm("_binary_jquery_3_4_1_min_js_end");
 
-
 int8_t flash_status = 0;
 int8_t enableota = 0;
 
@@ -41,16 +37,14 @@ EventGroupHandle_t reboot_event_group;
 const int REBOOT_BIT = BIT0;
 /********************************* OTA *******************************************/
 
-
 /* @brief tag used for ESP serial console messages */
 static const char TAG[] = "api_rest";
 
 /* @brief the HTTP server handle */
 static httpd_handle_t server = NULL;
 
-
 // HTTP GET General info request
-static esp_err_t general_info_get_handler(httpd_req_t *req) {
+static esp_err_t general_info_get_handler(httpd_req_t *req){
 
     httpd_resp_set_type(req, "application/json");
     
@@ -90,6 +84,7 @@ static esp_err_t general_info_get_handler(httpd_req_t *req) {
     uint32_t uptime_sec = (uint32_t)(time_us / 1000000ULL);
     cJSON *system = cJSON_CreateObject();
     cJSON_AddNumberToObject(system, "uptime_seconds", uptime_sec);
+    cJSON_AddNumberToObject(system, "heap", esp_get_free_heap_size());
     cJSON_AddItemToObject(data, "system", system);
 
     cJSON_AddItemToObject(root, "data", data);
@@ -98,12 +93,14 @@ static esp_err_t general_info_get_handler(httpd_req_t *req) {
     httpd_resp_sendstr(req, response);
     free((void *)response);
     cJSON_Delete(root);
+
     return ESP_OK;
 }
 
 // HTTP GET General info request
-static esp_err_t debug_get_handler(httpd_req_t *req) {
-        httpd_resp_set_type(req, "application/json");
+static esp_err_t debug_get_handler(httpd_req_t *req){
+    
+    httpd_resp_set_type(req, "application/json");
     
     std::string displayDigits;
     displayDigits += getDisplayDigitFromCode(displayingDigit2);
@@ -190,6 +187,7 @@ static esp_err_t debug_get_handler(httpd_req_t *req) {
     uint64_t time_us = esp_timer_get_time();
     uint32_t uptime_sec = (uint32_t)(time_us / 1000000ULL);
     cJSON_AddNumberToObject(data, "uptime_seconds", uptime_sec);
+    cJSON_AddNumberToObject(data, "heap", esp_get_free_heap_size());
     
     cJSON_AddItemToObject(root, "data", data);
     
@@ -197,13 +195,14 @@ static esp_err_t debug_get_handler(httpd_req_t *req) {
     httpd_resp_sendstr(req, response);
     free((void *)response);
     cJSON_Delete(root);
+
     return ESP_OK;
 }
 
 
 /* Simple handler for power control */
-static esp_err_t general_info_post_handler(httpd_req_t *req)
-{
+static esp_err_t general_info_post_handler(httpd_req_t *req){
+
     bool responseStatus = false;
     int remaining = req->content_len;
     char buffer[100];
@@ -330,8 +329,8 @@ static esp_err_t general_info_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t reboot_post_handler(httpd_req_t *req)
-{
+static esp_err_t reboot_post_handler(httpd_req_t *req){
+
     bool responseStatus = false;
     int remaining = req->content_len;
     char buffer[100];
@@ -376,8 +375,8 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t enableota_post_handler(httpd_req_t *req)
-{
+static esp_err_t enableota_post_handler(httpd_req_t *req){
+
     bool responseStatus = false;
     int remaining = req->content_len;
     char buffer[100];
@@ -425,8 +424,8 @@ static esp_err_t enableota_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t slef_clean_post_handler(httpd_req_t *req)
-{
+static esp_err_t slef_clean_post_handler(httpd_req_t *req){
+
     bool responseStatus = false;
     int remaining = req->content_len;
     char buffer[100];
@@ -481,8 +480,7 @@ static esp_err_t slef_clean_post_handler(httpd_req_t *req)
 }
 
 /* Simple handler for display control */
-static esp_err_t display_post_handler(httpd_req_t *req)
-{
+static esp_err_t display_post_handler(httpd_req_t *req){
     int remaining = req->content_len;
     char buffer[100];
     int received = 0;
@@ -522,9 +520,8 @@ static esp_err_t display_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Simple handler for display control */
-static esp_err_t wifi_config_delete_handler(httpd_req_t *req)
-{
+/* Simple handler for removing wifi config */
+static esp_err_t wifi_config_delete_handler(httpd_req_t *req){
     removeWifiConfig = true;
 
     // Response
@@ -602,9 +599,6 @@ static const httpd_uri_t wifi_config_delete_uri = {
     .user_ctx = NULL
 };
 
-
-
-
 /******************* OTA ***********************************/
 
 /*****************************************************
@@ -615,9 +609,7 @@ static const httpd_uri_t wifi_config_delete_uri = {
 			an ack back. So i could not call this in the handler
  
  *****************************************************/
-void systemRebootTask(void * parameter)
-{
-
+void systemRebootTask(void * parameter){
 	// Init the event group
 	reboot_event_group = xEventGroupCreate();
 	
@@ -751,21 +743,16 @@ static esp_err_t OTA_update_post_handler(httpd_req_t *req)
 			printf("OTA File Size: %d\r\n", content_length);
 
 			esp_err_t err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &ota_handle);
-			if (err != ESP_OK)
-			{
+			if (err != ESP_OK) {
 				printf("Error With OTA Begin, Cancelling OTA\r\n");
 				return ESP_FAIL;
-			}
-			else
-			{
+			} else {
 				printf("Writing to partition subtype %d at offset 0x%x\r\n", update_partition->subtype, update_partition->address);
 			}
 
 			// Lets write this first part of data out
 			esp_ota_write(ota_handle, body_start_p, body_part_len);
-		}
-		else
-		{
+		} else {
 			// Write OTA data
 			esp_ota_write(ota_handle, ota_buff, recv_len);
 			
@@ -779,14 +766,12 @@ static esp_err_t OTA_update_post_handler(httpd_req_t *req)
 	} while (recv_len > 0 && content_received < content_length);
 
 	// End response
-	//httpd_resp_send_chunk(req, NULL, 0);
+	// httpd_resp_send_chunk(req, NULL, 0);
 
 	
-	if (esp_ota_end(ota_handle) == ESP_OK)
-	{
+	if (esp_ota_end(ota_handle) == ESP_OK) {
 		// Lets update the partition
-		if(esp_ota_set_boot_partition(update_partition) == ESP_OK) 
-		{
+		if(esp_ota_set_boot_partition(update_partition) == ESP_OK) {
 			const esp_partition_t *boot_partition = esp_ota_get_boot_partition();
 
 			// Webpage will request status when complete 
@@ -795,15 +780,11 @@ static esp_err_t OTA_update_post_handler(httpd_req_t *req)
 		
 			ESP_LOGI("OTA", "Next boot partition subtype %d at offset 0x%x", boot_partition->subtype, boot_partition->address);
 			ESP_LOGI("OTA", "Please Restart System...");
-		}
-		else
-		{
+		} else {
 			ESP_LOGI("OTA", "\r\n\r\n !!! Flashed Error !!!");
 		}
 		
-	}
-	else
-	{
+	} else {
 		ESP_LOGI("OTA", "\r\n\r\n !!! OTA End Error !!!");
 	}
     
@@ -812,7 +793,6 @@ static esp_err_t OTA_update_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 }
-
 
 static const httpd_uri_t OTA_index_html = {
 	.uri = "/",
@@ -831,6 +811,7 @@ static const httpd_uri_t OTA_favicon_ico = {
 	 * context to demonstrate it's usage */
 	.user_ctx = NULL
 };
+
 static const httpd_uri_t OTA_jquery_3_4_1_min_js = {
 	.uri = "/jquery-3.4.1.min.js",
 	.method = HTTP_GET,
@@ -846,6 +827,7 @@ static const httpd_uri_t OTA_update = {
 	.handler = OTA_update_post_handler,
 	.user_ctx = NULL
 };
+
 static const httpd_uri_t OTA_status = {
 	.uri = "/status",
 	.method = HTTP_POST,
@@ -856,20 +838,36 @@ static const httpd_uri_t OTA_status = {
 /******************* OTA ***********************************/
 
 
-void start_rest_server(unsigned int port) {
-    server = NULL;
+void start_rest_server(){
+    if (server != NULL) {
+        httpd_stop(server);
+        server = NULL;
+        ESP_LOGW(TAG, "Previous HTTP server stopped before starting new one");
+    }
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable = true;
-    config.server_port = port;
+    config.server_port = 8080;
     config.ctrl_port = 32769; 
     config.stack_size = 8192;
     //config.stack_size = 16384;
     config.max_uri_handlers = 13;    
     config.lru_purge_enable = true;
+    config.max_open_sockets = 4;
 
     // Start the httpd server
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
-    if (httpd_start(&server, &config) == ESP_OK) {
+    esp_err_t ret = httpd_start(&server, &config);
+    if (ret == ESP_OK) { 
+        // Set URI handlers
+        register_server_uri_handlers();
+    } 
+    else {
+        ESP_LOGE(TAG, "Failed to start HTTP server: %s", esp_err_to_name(ret));
+    }
+}
+
+void register_server_uri_handlers(){
         // Set URI handlers
         ESP_LOGI(TAG, "Registering URI handlers");
         httpd_register_uri_handler(server, &swg_status_get_uri);
@@ -887,13 +885,4 @@ void start_rest_server(unsigned int port) {
 		httpd_register_uri_handler(server, &OTA_update);
 		httpd_register_uri_handler(server, &OTA_status);
         //httpd_register_basic_auth(server);
-    } 
-    else {
-        ESP_LOGI(TAG, "Error starting server!");
-    }
-}
-
-void stop_webserver() {
-    // Stop the httpd server
-    httpd_stop(server);
 }

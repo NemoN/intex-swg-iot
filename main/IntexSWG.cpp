@@ -1,11 +1,3 @@
-/* Hello World Example
-
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
 #include <stdio.h>
 #include <string>
 #include "sdkconfig.h"
@@ -40,7 +32,6 @@
 #include "IntexSWG.h"
 #include "TM1650.h"
 #include "utils.h"
-
 
 // DIO=18, CLK=19, Digits=2, ActivateDisplay=true, Intensity=3, DisplayMode=4x8
 TM1650 module(dataDispPin, clockDispPin, 2, true, 3, TM1650_DISPMODE_4x8);
@@ -82,8 +73,7 @@ volatile bool waitForWifiConfig = true;
 volatile uint8_t dataReceivedBuffer[128][2];
 volatile int totalbytes = 0;
 
-
-char getDisplayDigitFromCode(uint8_t code) {
+char getDisplayDigitFromCode(uint8_t code){
     switch (code) {
         case DISP_BLANK: return 0;
         case DISP_0: return '0';
@@ -104,7 +94,7 @@ char getDisplayDigitFromCode(uint8_t code) {
     }
 }
 
-uint8_t getCodeFromDisplayDigit(char displayDigit) {
+uint8_t getCodeFromDisplayDigit(char displayDigit){
     switch (displayDigit) {
         case 0: return DISP_BLANK;
         case '0': return DISP_0;
@@ -122,7 +112,7 @@ uint8_t getCodeFromDisplayDigit(char displayDigit) {
     }
 }
 
-void IRAM_ATTR machinePower(bool powerON) {
+void IRAM_ATTR machinePower(bool powerON){
     if (powerON) { 
         machineON = true;
         delayMicroseconds(2500);
@@ -147,15 +137,13 @@ void feedTheDog(){
     TIMERG1.wdt_wprotect=0;                   // write protect
 }
 
-inline uint32_t IRAM_ATTR clocks()
-{
+inline uint32_t IRAM_ATTR clocks(){
     uint32_t ccount;
     asm volatile ( "rsr %0, ccount" : "=a" (ccount) );
     return ccount;
 }
 
-inline void delayClocks(uint32_t clks)
-{
+inline void delayClocks(uint32_t clks){
     uint32_t c = clocks();
     while( (clocks() - c ) < clks ){
         asm(" nop");
@@ -165,7 +153,7 @@ inline void delayClocks(uint32_t clks)
 /**
  * @brief Task in charge of ESP32<->SWG serial BUS
  */
-void IRAM_ATTR Core1( void* p) {
+void IRAM_ATTR Core1( void* p){
 
     vTaskDelay(1000);    
     machinePower(true);
@@ -343,28 +331,6 @@ void IRAM_ATTR Core1( void* p) {
 }
 
 /**
- * @brief this is an exemple of a callback that you can setup in your own app to get notified of wifi manager event.
- */
-void cb_connection_ok(void *pvParameter) {
-    //wifiReconnecting = false;
-	//ip_event_got_ip_t* param = (ip_event_got_ip_t*)pvParameter;
-
-	/* transform IP to human readable string */
-	//char str_ip[16];
-	//esp_ip4addr_ntoa(&param->ip_info.ip, str_ip, IP4ADDR_STRLEN_MAX);
-
-	//ESP_LOGI(TAG, "I have a connection and my IP is %s!", str_ip);    
-}
-
-/**
- * @brief this is an exemple of a callback that you can setup in your own app to get notified of wifi manager event.
- */
-void cb_connection_ko(void *pvParameter) {    
-    esp_wifi_connect();
-}
-
-
-/**
  * @brief Task that shows a countdown en restarts ESP32 when wifi configuration has been saved successfully
  */
 void reset_esp(void *pvParameter){
@@ -399,7 +365,7 @@ void reset_esp(void *pvParameter){
     esp_restart();
 }
 
-void sendDataToDisplay(uint8_t digit, uint8_t value, uint8_t intensity) {
+void sendDataToDisplay(uint8_t digit, uint8_t value, uint8_t intensity){
     if (!keyCodeSetByAPI) buttonStatus = module.getButtonPressedCode();
     module.setupDisplay(displayON, intensity);
     module.setSegments(value, (digit & 0b111) >> 1);    
@@ -408,12 +374,11 @@ void sendDataToDisplay(uint8_t digit, uint8_t value, uint8_t intensity) {
 /**
  * @brief Task in charge of ESP32<->Display serial BUS
  */
-void RTOS_1(void *p) {
+void RTOS_1(void *p){
 
     vTaskDelay(1000);
 
     while(1) {
-
         sendDataToDisplay(DIGIT1, statusDigit1, displayIntensity);
         vTaskDelay(10);
         sendDataToDisplay(DIGIT2, statusDigit2, displayIntensity);
@@ -425,8 +390,7 @@ void RTOS_1(void *p) {
     }
 }
 
-
-void select_self_clean_period() {
+void select_self_clean_period(){
     unsigned long time1;
     unsigned long time2;
     time1 = time2 = millis();
@@ -446,7 +410,7 @@ void select_self_clean_period() {
     }
 }
 
-void press_lock_button() {
+void press_lock_button(){
     unsigned long time1;
     unsigned long time2;
     time1 = time2 = millis();    
@@ -457,11 +421,10 @@ void press_lock_button() {
     buttonStatus = 0x00;    
 }
 
-
 /**
  * @brief Task that controls virtual key press (API), power status info and display information to be retrieved by API
  */
-void RTOS_2(void *p) {
+void RTOS_2(void *p){
 
     vTaskDelay(1000);
     
@@ -486,7 +449,8 @@ void RTOS_2(void *p) {
 
     while(1) { 
         if (removeWifiConfig) {            
-            //wifi_manager_clear_wifi_configuration();
+            wifi_manager_clear_wifi_configuration();
+
             reset_esp(NULL);
         }
         
@@ -590,12 +554,32 @@ void RTOS_2(void *p) {
     }
 }
 
+void wifi_watchdog_task(void *pvParameter){
+    char ip[IP4ADDR_STRLEN_MAX] = {0};
+
+    while (1) {
+		if (wifi_manager_lock_sta_ip_string(1000)) {
+	        strcpy(ip, wifi_manager_get_sta_ip_string());
+			wifi_manager_unlock_sta_ip_string();
+
+			if (strcmp(ip, "0.0.0.0") == 0) {
+				ESP_LOGW(TAG, "WiFi appears disconnected (IP = 0.0.0.0)");
+				wifi_manager_disconnect_async();
+				vTaskDelay(pdMS_TO_TICKS(1000));
+				wifi_manager_connect_async();
+			}
+		}
+		
+		vTaskDelay(pdMS_TO_TICKS(30000));
+    }
+}
 
 /**
  * @brief Show blinking "AP" in the display while waiting for wifi configuration
  */
-void ConfigureWifi(void *p) {
-    vTaskDelay(1000);
+void ConfigureWifi(void *p){
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
     int i = 0;
     while(waitForWifiConfig) {
         //statusDigit2 = (i % 2 == 0) ? 0x02 : 00;
@@ -610,8 +594,18 @@ void ConfigureWifi(void *p) {
     vTaskDelete( NULL );
 }
 
+void startCore0(void){
+    xTaskCreatePinnedToCore(
+        systemRebootTask,      // Function that implements the task.
+        "rebootTask",           // Text name for the task.
+        2048,                   // Stack size in bytes, not words.
+        NULL,                   // Parameter passed into the task.
+        tskIDLE_PRIORITY + 5,   // Priority
+        NULL,                   // Variable to hold the task's data structure.
+        0);                     // Core 0
+}
 
-void startCore0a(void) {
+void startCore0a(void){ // ESP32<->Display serial BUS
     xTaskCreatePinnedToCore(
         RTOS_1,                 // Function that implements the task.
         "RTOS-1",               // Text name for the task.
@@ -619,10 +613,10 @@ void startCore0a(void) {
         ( void * ) 1,           // Parameter passed into the task.
         tskIDLE_PRIORITY + 4,   // Priority
         &xHandle1,              // Variable to hold the task's data structure.
-        0);
+        0);                     // Core 0
 }
 
-void startCore0b(void) {
+void startCore0b(void){ // Task that controls virtual key press (API), power status info and display information
     xTaskCreatePinnedToCore(
         RTOS_2,                 // Function that implements the task.
         "RTOS-2",               // Text name for the task.
@@ -630,14 +624,14 @@ void startCore0b(void) {
         ( void * ) 1,           // Parameter passed into the task.
         tskIDLE_PRIORITY + 3,   // Priority
         &xHandle2,              // Variable to hold the task's data structure.
-        0);
+        0);                     // Core 0
+    
     module.clearDisplay();
     module.setupDisplay(true, 4);
 }
 
 // Function that creates the superloop Core1 to be pinned at Core 1
-void startCore1( void )
-{
+void startCore1(void){
     xTaskCreatePinnedToCore(
         Core1,                  // Function that implements the task.
         "Core1",                // Text name for the task.
@@ -649,20 +643,69 @@ void startCore1( void )
 }
 
 // Function that creates the superloop Core1 to be pinned at Core 1
-void configureWifiTask( void )
-{
+void configureWifiTask(void){
     xTaskCreate(
-        ConfigureWifi,                  // Function that implements the task.
-        "ConfigureWifi",                // Text name for the task.
+        ConfigureWifi,          // Function that implements the task.
+        "ConfigureWifi",        // Text name for the task.
         STACK_SIZE,             // Stack size in bytes, not words.
         ( void * ) 1,           // Parameter passed into the task.
         tskIDLE_PRIORITY + 2,   // Priority
-        &TaskA);                 // Task
+        &TaskA);                // Task
 }
 
+void configureWifiWatchdog(void){
+    xTaskCreate(
+        wifi_watchdog_task,    // Function that implements the task.
+        "wifi_watchdog",        // Text name for the task.
+        4096,                   // Stack size in bytes, not words.
+        NULL,                   // Parameter passed into the task.
+        5,                      // Priority
+        NULL);                  // Task
+}
 
-extern "C" void app_main(void)
-{
+/**
+ * @brief this is an exemple of a callback that you can setup in your own app to get notified of wifi manager event.
+ */
+void cb_connection_ok(void *pvParameter){
+    //wifiReconnecting = false;
+
+	/* transform IP to human readable string */
+	ip_event_got_ip_t* param = (ip_event_got_ip_t*)pvParameter;
+	
+    char str_ip[16];
+	esp_ip4addr_ntoa(&param->ip_info.ip, str_ip, IP4ADDR_STRLEN_MAX);
+    ESP_LOGI(TAG, "Connected. IP acquired: %s", str_ip);
+
+    start_rest_server();
+}
+
+/**
+ * @brief this is an exemple of a callback that you can setup in your own app to get notified of wifi manager event.
+ */
+void cb_connection_ko(void *pvParameter){    
+
+    wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)pvParameter;
+
+    ESP_LOGW(TAG, "Connection lost. Reason: %d", event->reason);
+
+    // Beacon timeout
+    if (event->reason == WIFI_REASON_BEACON_TIMEOUT) {
+        ESP_LOGW(TAG, "Beacon timeout detected. Forcing reconnect...");
+
+        // Sicherstellen, dass WiFi Power Save deaktiviert ist
+        esp_wifi_set_ps(WIFI_PS_NONE);
+
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_wifi_connect();
+    } else {
+        // Standardbehandlung für andere Fälle
+        esp_wifi_connect();
+    }
+}
+
+extern "C" void app_main(void){
+
     pinMode(dataPin, GPIO_MODE_INPUT);
     GPIO_Set(dataPin);
 
@@ -691,33 +734,18 @@ extern "C" void app_main(void)
 
     printf("Free heap: %d\n", esp_get_free_heap_size());
 
-
-/*
-    for (int i = 10; i >= 0; i--) {
-        printf("Restarting in %d seconds...\n", i);
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-    printf("Restarting now.\n");
-    fflush(stdout);
-    esp_restart();
-*/
-
     /* start the wifi manager */
 	wifi_manager_start();
 
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    ESP_LOGI(TAG, "WiFi Power Save disabled (WIFI_PS_NONE)");
+
+    wifi_config_t sta_config;
+    esp_wifi_get_config(WIFI_IF_STA, &sta_config);
+    sta_config.sta.listen_interval = 10;
+    esp_wifi_set_config(WIFI_IF_STA, &sta_config);
+
     //wifi_manager_clear_wifi_configuration();
-
-	/* register a callback as an example to how you can integrate your code with the wifi manager */
-	//wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);    
-
-	/* your code should go here. Here we simply create a task on core 2 that monitors free heap memory */
-	//xTaskCreatePinnedToCore(&monitoring_task, "monitoring_task", 2048, NULL, 1, NULL, 0);
-    /*
-    while (!wifi_manager_fetch_wifi_sta_config())
-    {
-        delayMicroseconds(10000000);
-    }
-    */
     
     if (wifi_manager_fetch_wifi_sta_config())
     {
@@ -726,17 +754,16 @@ extern "C" void app_main(void)
         wifi_manager_set_callback(WM_EVENT_STA_DISCONNECTED, &cb_connection_ko);
         wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
 
-        startCore1();
-        xTaskCreatePinnedToCore(&systemRebootTask, "rebootTask", 2048, NULL, 5, NULL, 0);
-        start_rest_server(8080);
+        startCore1(); // ESP32<->SWG serial BUS
+        startCore0(); // OTA
     }
     else {
         //wifi_manager_set_callback(WM_EVENT_WIFI_CONFIG_SAVED, &reset_esp);
         configureWifiTask();
     }
 
-    startCore0a();    
-    startCore0b();
+    startCore0a(); // ESP32<->Display serial BUS  
+    startCore0b(); // Task that controls virtual key press (API), power status info and display information
 
-    
+    configureWifiWatchdog();
 }
