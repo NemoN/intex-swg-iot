@@ -60,8 +60,6 @@ Contains the freeRTOS task and all necessary support
 #include "nvs_sync.h"
 #include "wifi_manager.h"
 
-
-
 /* objects used to manipulate the main queue of events */
 QueueHandle_t wifi_manager_queue;
 
@@ -141,10 +139,11 @@ const int WIFI_MANAGER_SCAN_BIT = BIT7;
 /* @brief When set, means user requested for a disconnect */
 const int WIFI_MANAGER_REQUEST_DISCONNECT_BIT = BIT8;
 
+/* @brief When set, connection is in progress */
+const int WIFI_MANAGER_CONNECTING_BIT = BIT9;
 
 
 void wifi_manager_timer_retry_cb( TimerHandle_t xTimer ){
-
 	ESP_LOGI(TAG, "Retry Timer Tick! Sending ORDER_CONNECT_STA with reason CONNECTION_REQUEST_AUTO_RECONNECT");
 
 	/* stop the timer */
@@ -152,7 +151,6 @@ void wifi_manager_timer_retry_cb( TimerHandle_t xTimer ){
 
 	/* Attempt to reconnect */
 	wifi_manager_send_message(WM_ORDER_CONNECT_STA, (void*)CONNECTION_REQUEST_AUTO_RECONNECT);
-
 }
 
 void wifi_manager_timer_shutdown_ap_cb( TimerHandle_t xTimer){
@@ -171,7 +169,6 @@ void wifi_manager_scan_async(){
 void wifi_manager_disconnect_async(){
 	wifi_manager_send_message(WM_ORDER_DISCONNECT_STA, NULL);
 }
-
 
 void wifi_manager_start(){
 
@@ -386,14 +383,11 @@ bool wifi_manager_fetch_wifi_sta_config(){
 	else{
 		return false;
 	}
-
 }
-
 
 void wifi_manager_clear_ip_info_json(){
 	strcpy(ip_info_json, "{}\n");
 }
-
 
 void wifi_manager_generate_ip_info_json(update_reason_code_t update_reason_code){
 
@@ -442,18 +436,15 @@ void wifi_manager_generate_ip_info_json(update_reason_code_t update_reason_code)
 	else{
 		wifi_manager_clear_ip_info_json();
 	}
-
-
 }
 
 
 void wifi_manager_clear_access_points_json(){
 	strcpy(accessp_json, "[]\n");
 }
+
 void wifi_manager_generate_acess_points_json(){
-
 	strcpy(accessp_json, "[");
-
 
 	const char oneap_str[] = ",\"chan\":%d,\"rssi\":%d,\"auth\":%d}%c\n";
 
@@ -477,10 +468,7 @@ void wifi_manager_generate_acess_points_json(){
 		/* add it to the list */
 		strcat(accessp_json, one_ap);
 	}
-
 }
-
-
 
 bool wifi_manager_lock_sta_ip_string(TickType_t xTicksToWait){
 	if(wifi_manager_sta_ip_mutex){
@@ -494,8 +482,8 @@ bool wifi_manager_lock_sta_ip_string(TickType_t xTicksToWait){
 	else{
 		return false;
 	}
-
 }
+
 void wifi_manager_unlock_sta_ip_string(){
 	xSemaphoreGive( wifi_manager_sta_ip_mutex );
 }
@@ -522,7 +510,6 @@ char* wifi_manager_get_sta_ip_string(){
 	return wifi_manager_sta_ip;
 }
 
-
 bool wifi_manager_lock_json_buffer(TickType_t xTicksToWait){
 	if(wifi_manager_json_mutex){
 		if( xSemaphoreTake( wifi_manager_json_mutex, xTicksToWait ) == pdTRUE ) {
@@ -537,6 +524,7 @@ bool wifi_manager_lock_json_buffer(TickType_t xTicksToWait){
 	}
 
 }
+
 void wifi_manager_unlock_json_buffer(){
 	xSemaphoreGive( wifi_manager_json_mutex );
 }
@@ -545,13 +533,10 @@ char* wifi_manager_get_ap_list_json(){
 	return accessp_json;
 }
 
-
 /**
  * @brief Standard wifi event handler
  */
 static void wifi_manager_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data){
-
-
 	if (event_base == WIFI_EVENT){
 
 		switch(event_id){
@@ -604,6 +589,9 @@ static void wifi_manager_event_handler(void* arg, esp_event_base_t event_base, i
 		 * the application is LwIP-based, then you need to wait until the got ip event comes in. */
 		case WIFI_EVENT_STA_CONNECTED:
 			ESP_LOGI(TAG, "WIFI_EVENT_STA_CONNECTED");
+
+			xEventGroupClearBits(wifi_manager_event_group, WIFI_MANAGER_CONNECTING_BIT);
+
 			break;
 
 		/* This event can be generated in the following scenarios:
@@ -652,6 +640,8 @@ static void wifi_manager_event_handler(void* arg, esp_event_base_t event_base, i
 		 * IP changed” via LwIP menuconfig.*/
 		case WIFI_EVENT_STA_DISCONNECTED:
 			ESP_LOGI(TAG, "WIFI_EVENT_STA_DISCONNECTED");
+
+			xEventGroupClearBits(wifi_manager_event_group, WIFI_MANAGER_CONNECTING_BIT);
 
 			wifi_event_sta_disconnected_t* wifi_event_sta_disconnected = (wifi_event_sta_disconnected_t*)malloc(sizeof(wifi_event_sta_disconnected_t));
 			*wifi_event_sta_disconnected =  *( (wifi_event_sta_disconnected_t*)event_data );
@@ -746,14 +736,11 @@ static void wifi_manager_event_handler(void* arg, esp_event_base_t event_base, i
 
 		}
 	}
-
 }
-
 
 wifi_config_t* wifi_manager_get_wifi_sta_config(){
 	return wifi_manager_config_sta;
 }
-
 
 void wifi_manager_connect_async(){
 	/* in order to avoid a false positive on the front end app we need to quickly flush the ip json
@@ -767,11 +754,9 @@ void wifi_manager_connect_async(){
 	wifi_manager_send_message(WM_ORDER_CONNECT_STA, (void*)CONNECTION_REQUEST_USER);
 }
 
-
 char* wifi_manager_get_ip_info_json(){
 	return ip_info_json;
 }
-
 
 void wifi_manager_destroy(){
 
@@ -801,10 +786,7 @@ void wifi_manager_destroy(){
 	wifi_manager_event_group = NULL;
 	vQueueDelete(wifi_manager_queue);
 	wifi_manager_queue = NULL;
-
-
 }
-
 
 void wifi_manager_filter_unique( wifi_ap_record_t * aplist, uint16_t * aps) {
 	int total_unique;
@@ -862,6 +844,7 @@ BaseType_t wifi_manager_send_message_to_front(message_code_t code, void *param){
 	queue_message msg;
 	msg.code = code;
 	msg.param = param;
+
 	return xQueueSendToFront( wifi_manager_queue, &msg, portMAX_DELAY);
 }
 
@@ -869,12 +852,12 @@ BaseType_t wifi_manager_send_message(message_code_t code, void *param){
 	queue_message msg;
 	msg.code = code;
 	msg.param = param;
+
 	return xQueueSend( wifi_manager_queue, &msg, portMAX_DELAY);
 }
 
 
 void wifi_manager_set_callback(message_code_t message_code, void (*func_ptr)(void*) ){
-
 	if(cb_ptr_arr && message_code < WM_MESSAGE_CODE_COUNT){
 		cb_ptr_arr[message_code] = func_ptr;
 	}
@@ -890,12 +873,10 @@ esp_netif_t* wifi_manager_get_esp_netif_sta(){
 
 void wifi_manager( void * pvParameters ){
 
-
 	queue_message msg;
 	BaseType_t xStatus;
 	EventBits_t uxBits;
 	uint8_t	retries = 0;
-
 
 	/* initialize the tcp stack */
 	ESP_ERROR_CHECK(esp_netif_init());
@@ -941,7 +922,6 @@ void wifi_manager( void * pvParameters ){
 		memcpy(ap_config.ap.password, wifi_settings.ap_pwd, sizeof(wifi_settings.ap_pwd));
 	}
 	
-
 	/* DHCP AP configuration */
 	esp_netif_dhcps_stop(esp_netif_ap); /* DHCP client/server must be stopped before setting new IP information. */
 	esp_netif_ip_info_t ap_ip_info;
@@ -975,7 +955,6 @@ void wifi_manager( void * pvParameters ){
 
 	/* enqueue first event: load previous config */
 	wifi_manager_send_message(WM_ORDER_LOAD_AND_RESTORE_STA, NULL);
-
 
 	/* main processing loop */
 	for(;;){
@@ -1057,16 +1036,23 @@ void wifi_manager( void * pvParameters ){
 				}
 
 				uxBits = xEventGroupGetBits(wifi_manager_event_group);
-				if( ! (uxBits & WIFI_MANAGER_WIFI_CONNECTED_BIT) ){
+				if( ! (uxBits & WIFI_MANAGER_WIFI_CONNECTED_BIT) && ! (uxBits & WIFI_MANAGER_CONNECTING_BIT) ){
 					/* update config to latest and attempt connection */
-					ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, wifi_manager_get_wifi_sta_config()));
+					wifi_config_t* config = wifi_manager_get_wifi_sta_config();
+					if(config && config->sta.ssid[0] != '\0') {
+						ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, config));
 
-					/* if there is a wifi scan in progress abort it first
-					   Calling esp_wifi_scan_stop will trigger a SCAN_DONE event which will reset this bit */
-					if(uxBits & WIFI_MANAGER_SCAN_BIT){
-						esp_wifi_scan_stop();
-					}
-					ESP_ERROR_CHECK(esp_wifi_connect());
+						/* if there is a wifi scan in progress abort it first
+						Calling esp_wifi_scan_stop will trigger a SCAN_DONE event which will reset this bit */
+						if(uxBits & WIFI_MANAGER_SCAN_BIT){
+							esp_wifi_scan_stop();
+						}						
+
+						xEventGroupSetBits(wifi_manager_event_group, WIFI_MANAGER_CONNECTING_BIT);
+						ESP_ERROR_CHECK(esp_wifi_connect());
+					} else {
+						ESP_LOGW(TAG, "No valid STA config for connect. Skipping esp_wifi_connect().");
+					}					
 				}
 
 				/* callback */
@@ -1330,7 +1316,18 @@ void wifi_manager( void * pvParameters ){
 	} /* end of for loop */
 
 	vTaskDelete( NULL );
-
 }
 
-
+void wifi_manager_clear_wifi_configuration(void){
+    ESP_LOGI("wifi_manager", "Clearing WiFi credentials from NVS");
+    nvs_handle handle;
+    esp_err_t err = nvs_open(wifi_manager_nvs_namespace, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        nvs_erase_all(handle); // löscht alle Schlüssel im Namespace
+        nvs_commit(handle);
+        nvs_close(handle);
+        ESP_LOGI("wifi_manager", "WiFi credentials erased. Reboot to apply.");
+    } else {
+        ESP_LOGW("wifi_manager", "Failed to open NVS namespace for erasing: %s", esp_err_to_name(err));
+    }
+}

@@ -94,7 +94,7 @@ void dns_server(void *pvParameters) {
 
     /* Bind to port 53 (typical DNS Server port) */
     esp_netif_ip_info_t ip;
-    esp_netif_t* netif_sta = wifi_manager_get_esp_netif_sta();
+    esp_netif_t *netif_sta = wifi_manager_get_esp_netif_sta();
     ESP_ERROR_CHECK(esp_netif_get_ip_info(netif_sta, &ip));
     ra.sin_family = AF_INET;
     ra.sin_addr.s_addr = ip.ip.addr;
