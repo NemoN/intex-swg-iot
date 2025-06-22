@@ -558,19 +558,21 @@ void wifi_watchdog_task(void *pvParameter){
     char ip[IP4ADDR_STRLEN_MAX] = {0};
 
     while (1) {
-		if (wifi_manager_lock_sta_ip_string(1000)) {
+		vTaskDelay(pdMS_TO_TICKS(30000));
+
+        if (wifi_manager_lock_sta_ip_string(1000)) {
 	        strcpy(ip, wifi_manager_get_sta_ip_string());
 			wifi_manager_unlock_sta_ip_string();
 
 			if (strcmp(ip, "0.0.0.0") == 0) {
 				ESP_LOGW(TAG, "WiFi appears disconnected (IP = 0.0.0.0)");
-				wifi_manager_disconnect_async();
-				vTaskDelay(pdMS_TO_TICKS(1000));
-				wifi_manager_connect_async();
+        
+                esp_wifi_disconnect();
+                vTaskDelay(pdMS_TO_TICKS(1000));
+
+                esp_wifi_connect();
 			}
-		}
-		
-		vTaskDelay(pdMS_TO_TICKS(30000));
+		}		
     }
 }
 
