@@ -217,8 +217,8 @@ typedef enum message_code_t {
 	WM_EVENT_SCAN_DONE = 11,
 	WM_EVENT_STA_GOT_IP = 12,
 	WM_ORDER_STOP_AP = 13,
-	WM_MESSAGE_CODE_COUNT = 14 /* important for the callback array */
-
+	WM_EVENT_STA_LOST_IP = 14,
+	WM_MESSAGE_CODE_COUNT = 15 /* important for the callback array */
 }message_code_t;
 
 /**

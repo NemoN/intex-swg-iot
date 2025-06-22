@@ -732,8 +732,11 @@ static void wifi_manager_event_handler(void* arg, esp_event_base_t event_base, i
 		 * know that the IPV4 address is lost. */
 		case IP_EVENT_STA_LOST_IP:
 			ESP_LOGI(TAG, "IP_EVENT_STA_LOST_IP");
-			break;
 
+			BaseType_t send_result = wifi_manager_send_message(WM_EVENT_STA_LOST_IP, NULL);
+			ESP_LOGI(TAG, "Send WM_EVENT_STA_LOST_IP: %d", send_result == pdPASS);			
+
+			break;
 		}
 	}
 }
@@ -961,6 +964,8 @@ void wifi_manager( void * pvParameters ){
 		xStatus = xQueueReceive( wifi_manager_queue, &msg, portMAX_DELAY );
 
 		if( xStatus == pdPASS ){
+			ESP_LOGI(TAG, "Received message: %d", msg.code);
+
 			switch(msg.code){
 
 			case WM_EVENT_SCAN_DONE:{
@@ -1158,6 +1163,8 @@ void wifi_manager( void * pvParameters ){
 					wifi_manager_send_message(WM_ORDER_START_AP, NULL);
 				}
 				else{
+					ESP_LOGW(TAG, "Lost connection detected");
+
 					/* lost connection ? */
 					if(wifi_manager_lock_json_buffer( portMAX_DELAY )){
 						wifi_manager_generate_ip_info_json( UPDATE_LOST_CONNECTION );
@@ -1166,6 +1173,17 @@ void wifi_manager( void * pvParameters ){
 
 					/* Start the timer that will try to restore the saved config */
 					xTimerStart( wifi_manager_retry_timer, (TickType_t)0 );
+					// if(retries < WIFI_MANAGER_MAX_RETRY_START_AP){
+					// 	retries++;
+					// 	ESP_LOGI(TAG, "Instant reconnect (Try %u of %u)", retries, WIFI_MANAGER_MAX_RETRY_START_AP);
+
+					// 	wifi_manager_send_message(WM_ORDER_CONNECT_STA, (void*)CONNECTION_REQUEST_AUTO_RECONNECT);
+					// } else {
+					// 	retries = 0;
+					// 	ESP_LOGW(TAG, "Max. reconnect-count reached. Starting SoftAP");
+
+					// 	wifi_manager_send_message(WM_ORDER_START_AP, NULL);
+					// }					
 
 					/* if it was a restore attempt connection, we clear the bit */
 					xEventGroupClearBits(wifi_manager_event_group, WIFI_MANAGER_REQUEST_RESTORE_STA_BIT);
@@ -1181,6 +1199,8 @@ void wifi_manager( void * pvParameters ){
 						else{
 							/* In this scenario the connection was lost beyond repair: kick start the AP! */
 							retries = 0;
+
+							ESP_LOGW(TAG, "Max. reconnect-count reached. Starting SoftAP");
 
 							/* start SoftAP */
 							wifi_manager_send_message(WM_ORDER_START_AP, NULL);
@@ -1213,7 +1233,6 @@ void wifi_manager( void * pvParameters ){
 
 			case WM_ORDER_STOP_AP:
 				ESP_LOGI(TAG, "MESSAGE: ORDER_STOP_AP");
-
 
 				uxBits = xEventGroupGetBits(wifi_manager_event_group);
 
@@ -1294,6 +1313,34 @@ void wifi_manager( void * pvParameters ){
 
 				break;
 
+			case WM_EVENT_STA_LOST_IP:
+				ESP_LOGW(TAG, "WM_EVENT_STA_LOST_IP received, triggering reconnect");
+				ESP_LOGI(TAG, "WM_EVENT_STA_LOST_IP: Main loop processing LOST_IP event");
+				
+				esp_err_t err = esp_wifi_disconnect();
+				if (err != ESP_OK) {
+					ESP_LOGE(TAG, "esp_wifi_disconnect failed: %s", esp_err_to_name(err));
+				} else {
+					ESP_LOGI(TAG, "esp_wifi_disconnect returned %s", esp_err_to_name(err));
+				}
+
+				vTaskDelay(pdMS_TO_TICKS(1000));
+
+				err = esp_wifi_connect();
+				if (err != ESP_OK) {
+					ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(err));
+				} else {
+					ESP_LOGI(TAG, "esp_wifi_connect returned %s", esp_err_to_name(err));
+				}
+
+				/* callback */
+				if(cb_ptr_arr[msg.code]) {
+					ESP_LOGI(TAG, "Calling callback for WM_EVENT_STA_LOST_IP (code=%d)", msg.code);
+					(*cb_ptr_arr[msg.code])(msg.param);
+				}
+				ESP_LOGI(TAG, "Finished handling WM_EVENT_STA_LOST_IP");
+				break;
+
 			case WM_ORDER_DISCONNECT_STA:
 				ESP_LOGI(TAG, "MESSAGE: ORDER_DISCONNECT_STA");
 
@@ -1313,6 +1360,7 @@ void wifi_manager( void * pvParameters ){
 
 			} /* end of switch/case */
 		} /* end of if status=pdPASS */
+		ESP_LOGD(TAG, "wifi_manager main loop heartbeat");
 	} /* end of for loop */
 
 	vTaskDelete( NULL );
@@ -1320,12 +1368,14 @@ void wifi_manager( void * pvParameters ){
 
 void wifi_manager_clear_wifi_configuration(void){
     ESP_LOGI("wifi_manager", "Clearing WiFi credentials from NVS");
+
     nvs_handle handle;
     esp_err_t err = nvs_open(wifi_manager_nvs_namespace, NVS_READWRITE, &handle);
     if (err == ESP_OK) {
-        nvs_erase_all(handle); // löscht alle Schlüssel im Namespace
+        nvs_erase_all(handle);
         nvs_commit(handle);
         nvs_close(handle);
+
         ESP_LOGI("wifi_manager", "WiFi credentials erased. Reboot to apply.");
     } else {
         ESP_LOGW("wifi_manager", "Failed to open NVS namespace for erasing: %s", esp_err_to_name(err));
