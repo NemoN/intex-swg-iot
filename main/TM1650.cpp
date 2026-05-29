@@ -1,5 +1,4 @@
 #include "driver/gpio.h"
-#include "esp_event.h"
 #include "utils.h"
 
 #include "TM1650.h"

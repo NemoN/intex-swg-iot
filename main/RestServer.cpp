@@ -25,10 +25,6 @@ using namespace std;
 // Embedded Files. To add or remove make changes is component.mk file as well. 
 extern const uint8_t index_html_start[] asm("_binary_indexOTA_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_indexOTA_html_end");
-extern const uint8_t favicon_ico_start[] asm("_binary_favicon_ico_start");
-extern const uint8_t favicon_ico_end[]   asm("_binary_favicon_ico_end");
-extern const uint8_t jquery_3_4_1_min_js_start[] asm("_binary_jquery_3_4_1_min_js_start");
-extern const uint8_t jquery_3_4_1_min_js_end[]   asm("_binary_jquery_3_4_1_min_js_end");
 
 int8_t flash_status = 0;
 int8_t enableota = 0;
@@ -43,9 +39,49 @@ static const char TAG[] = "api_rest";
 /* @brief the HTTP server handle */
 static httpd_handle_t server = NULL;
 
+static esp_err_t read_request_body(httpd_req_t *req, char *buffer, size_t buffer_size){
+    size_t remaining = req->content_len;
+    size_t offset = 0;
+
+    if (remaining >= buffer_size) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+        return ESP_FAIL;
+    }
+
+    while (remaining > 0) {
+        int received = httpd_req_recv(req, buffer + offset, remaining);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
+            return ESP_FAIL;
+        }
+        offset += received;
+        remaining -= received;
+    }
+
+    buffer[offset] = '\0';
+    return ESP_OK;
+}
+
+static cJSON *parse_request_json(httpd_req_t *req, char *buffer, size_t buffer_size){
+    notifyApiRequest();
+    if (read_request_body(req, buffer, buffer_size) != ESP_OK) {
+        return NULL;
+    }
+
+    cJSON *root = cJSON_Parse(buffer);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
+    }
+    return root;
+}
+
 // HTTP GET General info request
 static esp_err_t general_info_get_handler(httpd_req_t *req){
 
+    notifyApiRequest();
     httpd_resp_set_type(req, "application/json");
     
     std::string displayDigits;
@@ -89,7 +125,7 @@ static esp_err_t general_info_get_handler(httpd_req_t *req){
 
     cJSON_AddItemToObject(root, "data", data);
     
-    const char *response = cJSON_Print(root);
+    const char *response = cJSON_PrintUnformatted(root);
     httpd_resp_sendstr(req, response);
     free((void *)response);
     cJSON_Delete(root);
@@ -100,6 +136,7 @@ static esp_err_t general_info_get_handler(httpd_req_t *req){
 // HTTP GET General info request
 static esp_err_t debug_get_handler(httpd_req_t *req){
     
+    notifyApiRequest();
     httpd_resp_set_type(req, "application/json");
     
     std::string displayDigits;
@@ -111,66 +148,40 @@ static esp_err_t debug_get_handler(httpd_req_t *req){
 
     cJSON *root = cJSON_CreateObject();
     cJSON *data = cJSON_CreateObject();
-    
+
     char powerStatusChar[10];
     char statusDigit1Char[10];
     char statusDigit2Char[10];
     char statusDigit3Char[10];
     char displayingDigit1Char[10];
     char displayingDigit2Char[10];
-    sprintf(powerStatusChar, "0x%02X", powerStatus);
-    sprintf(statusDigit1Char, "0x%02X", statusDigit1);
-    sprintf(statusDigit2Char, "0x%02X", statusDigit2);
-    sprintf(statusDigit3Char, "0x%02X", statusDigit3);
-    sprintf(displayingDigit1Char, "0x%02X", displayingDigit1);
-    sprintf(displayingDigit2Char, "0x%02X", displayingDigit2);
-    
-    std::string powerStatusStr;
-    std::string statusDigit1Str;
-    std::string statusDigit2Str;
-    std::string statusDigit3Str;
-    std::string displayingDigit1Str;
-    std::string displayingDigit2Str;
+    snprintf(powerStatusChar, sizeof(powerStatusChar), "0x%02X", powerStatus);
+    snprintf(statusDigit1Char, sizeof(statusDigit1Char), "0x%02X", statusDigit1);
+    snprintf(statusDigit2Char, sizeof(statusDigit2Char), "0x%02X", statusDigit2);
+    snprintf(statusDigit3Char, sizeof(statusDigit3Char), "0x%02X", statusDigit3);
+    snprintf(displayingDigit1Char, sizeof(displayingDigit1Char), "0x%02X", displayingDigit1);
+    snprintf(displayingDigit2Char, sizeof(displayingDigit2Char), "0x%02X", displayingDigit2);
+
+    // Build the received-bus dump on the heap (std::string grows as needed)
+    // instead of a large fixed stack buffer, so we can't overflow the httpd
+    // task stack regardless of buffer size.
     std::string readBufferStr;
-
-    powerStatusStr+=powerStatusChar;
-    statusDigit1Str+=statusDigit1Char;
-    statusDigit2Str+=statusDigit2Char;
-    statusDigit3Str+=statusDigit3Char;
-    displayingDigit1Str+=displayingDigit1Char;
-    displayingDigit2Str+=displayingDigit2Char;
-
-    char buf[4096], *pos = buf;
-    for (int i = 0 ; i != 128 ; i++) {
+    readBufferStr.reserve(128 * 16);
+    char entry[24];
+    for (int i = 0; i != 128; i++) {
         if (i) {
-            pos += sprintf(pos, ", ");
+            readBufferStr += ", ";
         }
-        pos += sprintf(pos, "[0X%02X, 0X%02X]", dataReceivedBuffer[i][0], dataReceivedBuffer[i][1]);
+        snprintf(entry, sizeof(entry), "[0X%02X, 0X%02X]", dataReceivedBuffer[i][0], dataReceivedBuffer[i][1]);
+        readBufferStr += entry;
     }
-    readBufferStr+=buf;
-    /*
-    const char* powerStatusStr = powerStatusChar;
-    const char* statusDigit1Str = statusDigit1Char;
-    const char* statusDigit2Str = statusDigit2Char;
-    const char* statusDigit3Str = statusDigit3Char;
-    const char* displayingDigit1Str = displayingDigit1Char;
-    const char* displayingDigit2Str = displayingDigit2Char;
-    */
-    /*
-    std::string powerStatusStr(powerStatusChar);
-    std::string statusDigit1Str(statusDigit1Char);
-    std::string statusDigit2Str(statusDigit2Char);
-    std::string statusDigit3Str(statusDigit3Char);
-    std::string displayingDigit1Str(displayingDigit1Char);
-    std::string displayingDigit2Str(displayingDigit2Char);  
-    */
 
-    cJSON_AddStringToObject(data, "powerStatus", powerStatusStr.c_str());
-    cJSON_AddStringToObject(data, "statusDigit1", statusDigit1Str.c_str());
-    cJSON_AddStringToObject(data, "statusDigit2", statusDigit2Str.c_str());
-    cJSON_AddStringToObject(data, "statusDigit3", statusDigit3Str.c_str());    
-    cJSON_AddStringToObject(data, "displayingDigit1", displayingDigit1Str.c_str());
-    cJSON_AddStringToObject(data, "displayingDigit2", displayingDigit2Str.c_str());
+    cJSON_AddStringToObject(data, "powerStatus", powerStatusChar);
+    cJSON_AddStringToObject(data, "statusDigit1", statusDigit1Char);
+    cJSON_AddStringToObject(data, "statusDigit2", statusDigit2Char);
+    cJSON_AddStringToObject(data, "statusDigit3", statusDigit3Char);
+    cJSON_AddStringToObject(data, "displayingDigit1", displayingDigit1Char);
+    cJSON_AddStringToObject(data, "displayingDigit2", displayingDigit2Char);
     cJSON_AddStringToObject(data, "current_code", displayDigits.c_str());
     cJSON_AddStringToObject(data, "readBuffer", readBufferStr.c_str());
     
@@ -191,7 +202,7 @@ static esp_err_t debug_get_handler(httpd_req_t *req){
     
     cJSON_AddItemToObject(root, "data", data);
     
-    const char *response = cJSON_Print(root);
+    const char *response = cJSON_PrintUnformatted(root);
     httpd_resp_sendstr(req, response);
     free((void *)response);
     cJSON_Delete(root);
@@ -204,114 +215,37 @@ static esp_err_t debug_get_handler(httpd_req_t *req){
 static esp_err_t general_info_post_handler(httpd_req_t *req){
 
     bool responseStatus = false;
-    int remaining = req->content_len;
     char buffer[100];
-    int received = 0;
-    if (remaining >= 100) {
-        /* Respond with 500 Internal Server Error */
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+
+    cJSON *root = parse_request_json(req, buffer, sizeof(buffer));
+    if (root == NULL) {
         return ESP_FAIL;
     }
-    while (remaining > 0) {
-        received = httpd_req_recv(req, buffer, remaining);
-        if (received <= 0) {
-            /* Respond with 500 Internal Server Error */
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
-            return ESP_FAIL;
-        }
-        remaining -= received;
+
+    cJSON* cjson_data = cJSON_GetObjectItem(root, "data");
+    cJSON* power_item = cjson_data != NULL ? cJSON_GetObjectItem(cjson_data, "power") : NULL;
+    if (power_item == NULL || power_item->valuestring == NULL) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing power");
+        return ESP_FAIL;
     }
 
-    cJSON *root = cJSON_Parse(buffer);
-    cJSON* cjson_data = cJSON_GetObjectItem(root, "data");
-    char* power = cJSON_GetObjectItem(cjson_data, "power")->valuestring;
+    char* power = power_item->valuestring;
 
-    if (strcmp(power, "on") == 0) {        
-        switch (powerStatus) {
-            case POWER_STATUS_OFF:
-                machinePower(true);
-                nextButtonStatus = BUTTON_POWER;
-                responseStatus = true;
-                break;
-            case POWER_STATUS_STANDBY:
-                keyCodeSetByAPI = true;
-                virtualPressButtonTime = 250;
-                buttonStatus = BUTTON_POWER;   
-                responseStatus = true;
-                break;
-            case POWER_STATUS_BUS_ERROR:
-                keyCodeSetByAPI = true;
-                virtualPressButtonTime = 250;
-                buttonStatus = BUTTON_POWER;
-                responseStatus = true;   
-                break;
-            default:
-                responseStatus = false;
-        }        
+    if (strcmp(power, "on") == 0) {
+        responseStatus = apiCommandPower(true);
     }
     else if (strcmp(power, "off") == 0) {
-        switch (powerStatus) {
-            case POWER_STATUS_BOOTING:            
-            case POWER_STATUS_ON:
-                keyCodeSetByAPI = true;
-                virtualPressButtonTime = 250;
-                buttonStatus = BUTTON_POWER;
-                delayedPowerOff = true;
-                responseStatus = true;
-                break;
-            case POWER_STATUS_STANDBY:
-                machinePower(false);
-                responseStatus = true;
-                break;
-            default:
-                responseStatus = false;
-        } 
+        responseStatus = apiCommandPower(false);
     }
     else if (strcmp(power, "standby") == 0) {
-        switch (powerStatus) {
-            case POWER_STATUS_BOOTING:            
-            case POWER_STATUS_ON:
-                keyCodeSetByAPI = true;
-                virtualPressButtonTime = 250;
-                buttonStatus = BUTTON_POWER;
-                responseStatus = true;
-                break;
-            case POWER_STATUS_OFF:
-                machinePower(true);
-                responseStatus = true;
-                break;
-            case POWER_STATUS_BUS_ERROR:
-                keyCodeSetByAPI = true;
-                virtualPressButtonTime = 250;
-                buttonStatus = BUTTON_POWER;
-                responseStatus = true;   
-                break;
-            default:
-                responseStatus = false;
-        } 
-    }  
-    
-    /*
-    if (strcmp(power, "on") == 0) {        
-        if (powerStatus == POWER_STATUS_STANDBY) {
-            buttonStatus = BUTTON_POWER;   
-            responseStatus = true;         
-        }
+        responseStatus = apiCommandStandby();
     }
-    // TODO: Change when relay is installed
-    else if (strcmp(power, "off") == 0) { 
-        if (powerStatus == POWER_STATUS_BOOTING || powerStatus == POWER_STATUS_ON) {
-            buttonStatus = BUTTON_POWER;
-            responseStatus = true;
-        }
+    else {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid power value");
+        return ESP_FAIL;
     }
-    else if (strcmp(power, "standby") == 0) {
-        if (powerStatus == POWER_STATUS_BOOTING || powerStatus == POWER_STATUS_ON) {
-            buttonStatus = BUTTON_POWER;
-            responseStatus = true;
-        }
-    } 
-    */           
 
     cJSON_Delete(root);
 
@@ -332,26 +266,22 @@ static esp_err_t general_info_post_handler(httpd_req_t *req){
 static esp_err_t reboot_post_handler(httpd_req_t *req){
 
     bool responseStatus = false;
-    int remaining = req->content_len;
     char buffer[100];
-    int received = 0;
-    if (remaining >= 100) {
-        /* Respond with 500 Internal Server Error */
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+
+    cJSON *root = parse_request_json(req, buffer, sizeof(buffer));
+    if (root == NULL) {
         return ESP_FAIL;
     }
-    while (remaining > 0) {
-        received = httpd_req_recv(req, buffer, remaining);
-        if (received <= 0) {
-            /* Respond with 500 Internal Server Error */
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
-            return ESP_FAIL;
-        }
-        remaining -= received;
-    }
-    cJSON *root = cJSON_Parse(buffer);
+
     cJSON* cjson_data = cJSON_GetObjectItem(root, "data");
-    char* myreboot = cJSON_GetObjectItem(cjson_data, "reboot")->valuestring;
+    cJSON* reboot_item = cjson_data != NULL ? cJSON_GetObjectItem(cjson_data, "reboot") : NULL;
+    if (reboot_item == NULL || reboot_item->valuestring == NULL) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing reboot");
+        return ESP_FAIL;
+    }
+
+    char* myreboot = reboot_item->valuestring;
     responseStatus=false; 
     if (strcmp(myreboot, "yes") == 0) {
         responseStatus=true; 
@@ -378,26 +308,22 @@ static esp_err_t reboot_post_handler(httpd_req_t *req){
 static esp_err_t enableota_post_handler(httpd_req_t *req){
 
     bool responseStatus = false;
-    int remaining = req->content_len;
     char buffer[100];
-    int received = 0;
-    if (remaining >= 100) {
-        /* Respond with 500 Internal Server Error */
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+
+    cJSON *root = parse_request_json(req, buffer, sizeof(buffer));
+    if (root == NULL) {
         return ESP_FAIL;
     }
-    while (remaining > 0) {
-        received = httpd_req_recv(req, buffer, remaining);
-        if (received <= 0) {
-            /* Respond with 500 Internal Server Error */
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
-            return ESP_FAIL;
-        }
-        remaining -= received;
-    }
-    cJSON *root = cJSON_Parse(buffer);
+
     cJSON* cjson_data = cJSON_GetObjectItem(root, "data");
-    char* myreboot = cJSON_GetObjectItem(cjson_data, "enableota")->valuestring;
+    cJSON* enableota_item = cjson_data != NULL ? cJSON_GetObjectItem(cjson_data, "enableota") : NULL;
+    if (enableota_item == NULL || enableota_item->valuestring == NULL) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing enableota");
+        return ESP_FAIL;
+    }
+
+    char* myreboot = enableota_item->valuestring;
     responseStatus=false; 
     if (strcmp(myreboot, "yes") == 0) {
         enableota=1; 
@@ -427,41 +353,35 @@ static esp_err_t enableota_post_handler(httpd_req_t *req){
 static esp_err_t slef_clean_post_handler(httpd_req_t *req){
 
     bool responseStatus = false;
-    int remaining = req->content_len;
     char buffer[100];
-    int received = 0;
-    if (remaining >= 100) {
-        /* Respond with 500 Internal Server Error */
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+
+    cJSON *root = parse_request_json(req, buffer, sizeof(buffer));
+    if (root == NULL) {
         return ESP_FAIL;
     }
-    while (remaining > 0) {
-        received = httpd_req_recv(req, buffer, remaining);
-        if (received <= 0) {
-            /* Respond with 500 Internal Server Error */
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
-            return ESP_FAIL;
-        }
-        remaining -= received;
+
+    cJSON* cjson_data = cJSON_GetObjectItem(root, "data");
+    cJSON* time_item = cjson_data != NULL ? cJSON_GetObjectItem(cjson_data, "time") : NULL;
+    if (time_item == NULL) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing time");
+        return ESP_FAIL;
     }
 
-    cJSON *root = cJSON_Parse(buffer);
-    cJSON* cjson_data = cJSON_GetObjectItem(root, "data");
-    int selfCleanRequestedTime = cJSON_GetObjectItem(cjson_data, "time")->valueint;
+    int selfCleanRequestedTime = time_item->valueint;
 
-    keyCodeSetByAPI = true;
-    virtualPressButtonTime = 6000;
-    buttonStatus = BUTTON_SELF_CLEAN;
-    
+    uint8_t selfCleanCode;
     if (selfCleanRequestedTime <= 6) {
-        selfCleanTime = DISP_1_CLEAN_06P;
+        selfCleanCode = DISP_1_CLEAN_06P;
     }
     else if (selfCleanRequestedTime <= 10) {
-        selfCleanTime = DISP_1_CLEAN_10P;
+        selfCleanCode = DISP_1_CLEAN_10P;
     }
     else {
-        selfCleanTime = DISP_1_CLEAN_14P;
-    }        
+        selfCleanCode = DISP_1_CLEAN_14P;
+    }
+
+    responseStatus = apiCommandSelfClean(selfCleanCode);
 
     cJSON_Delete(root);
 
@@ -481,27 +401,22 @@ static esp_err_t slef_clean_post_handler(httpd_req_t *req){
 
 /* Simple handler for display control */
 static esp_err_t display_post_handler(httpd_req_t *req){
-    int remaining = req->content_len;
     char buffer[100];
-    int received = 0;
-    if (remaining >= 100) {
-        /* Respond with 500 Internal Server Error */
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+
+    cJSON *root = parse_request_json(req, buffer, sizeof(buffer));
+    if (root == NULL) {
         return ESP_FAIL;
     }
-    while (remaining > 0) {
-        received = httpd_req_recv(req, buffer, remaining);
-        if (received <= 0) {
-            /* Respond with 500 Internal Server Error */
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
-            return ESP_FAIL;
-        }
-        remaining -= received;
+
+    cJSON* cjson_data = cJSON_GetObjectItem(root, "data");
+    cJSON* brightness_item = cjson_data != NULL ? cJSON_GetObjectItem(cjson_data, "brightness") : NULL;
+    if (brightness_item == NULL) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing brightness");
+        return ESP_FAIL;
     }
 
-    cJSON *root = cJSON_Parse(buffer);
-    cJSON* cjson_data = cJSON_GetObjectItem(root, "data");
-    displayIntensity = cJSON_GetObjectItem(cjson_data, "brightness")->valueint % 8; 
+    displayIntensity = brightness_item->valueint % 8; 
     ESP_LOGI(TAG, "Set display brightness to '%d'", displayIntensity);     
 
     cJSON_Delete(root);
@@ -522,6 +437,7 @@ static esp_err_t display_post_handler(httpd_req_t *req){
 
 /* Simple handler for removing wifi config */
 static esp_err_t wifi_config_delete_handler(httpd_req_t *req){
+    notifyApiRequest();
     removeWifiConfig = true;
 
     // Response
@@ -646,28 +562,6 @@ static esp_err_t OTA_index_html_handler(httpd_req_t *req)
 
 	return ESP_OK;
 }
-/* Send .ICO (icon) file  */
-static esp_err_t OTA_favicon_ico_handler(httpd_req_t *req)
-{
-	ESP_LOGI("OTA", "favicon_ico Requested");
-    
-	httpd_resp_set_type(req, "image/x-icon");
-
-	httpd_resp_send(req, (const char *)favicon_ico_start, favicon_ico_end - favicon_ico_start);
-
-	return ESP_OK;
-}
-/* jquery GET handler */
-static esp_err_t jquery_3_4_1_min_js_handler(httpd_req_t *req)
-{
-	ESP_LOGI("OTA", "jqueryMinJs Requested");
-
-	httpd_resp_set_type(req, "application/javascript");
-
-	httpd_resp_send(req, (const char *)jquery_3_4_1_min_js_start, (jquery_3_4_1_min_js_end - jquery_3_4_1_min_js_start)-1);
-
-	return ESP_OK;
-}
 
 /* Status */
 static esp_err_t OTA_update_status_handler(httpd_req_t *req)
@@ -676,7 +570,7 @@ static esp_err_t OTA_update_status_handler(httpd_req_t *req)
 	
 	ESP_LOGI("OTA", "Status Requested");
 	
-	sprintf(ledJSON, "{\"status\":%d,\"compile_time\":\"%s\",\"compile_date\":\"%s\"}", flash_status, __TIME__, __DATE__);
+	snprintf(ledJSON, sizeof(ledJSON), "{\"status\":%d,\"compile_time\":\"%s\",\"compile_date\":\"%s\"}", flash_status, __TIME__, __DATE__);
 	httpd_resp_set_type(req, "application/json");
 	httpd_resp_send(req, ledJSON, strlen(ledJSON));
 	
@@ -747,7 +641,7 @@ static esp_err_t OTA_update_post_handler(httpd_req_t *req)
 				printf("Error With OTA Begin, Cancelling OTA\r\n");
 				return ESP_FAIL;
 			} else {
-				printf("Writing to partition subtype %d at offset 0x%x\r\n", update_partition->subtype, update_partition->address);
+                printf("Writing to partition subtype %d at offset 0x%lx\r\n", update_partition->subtype, (unsigned long)update_partition->address);
 			}
 
 			// Lets write this first part of data out
@@ -758,7 +652,7 @@ static esp_err_t OTA_update_post_handler(httpd_req_t *req)
 			
 			content_received += recv_len;
             percentage = MIN(content_received * 100 / content_length, 99);
-            std::sprintf(complete_percent, "%d", percentage);
+            std::snprintf(complete_percent, sizeof(complete_percent), "%d", percentage);
             statusDigit1 = getCodeFromDisplayDigit((percentage < 10) ? complete_percent[0] : complete_percent[1]);
             statusDigit2 = getCodeFromDisplayDigit((percentage < 10) ? '0' : complete_percent[0]);
 		}
@@ -803,24 +697,6 @@ static const httpd_uri_t OTA_index_html = {
 	.user_ctx = NULL
 };
 
-static const httpd_uri_t OTA_favicon_ico = {
-	.uri = "/favicon.ico",
-	.method = HTTP_GET,
-	.handler = OTA_favicon_ico_handler,
-	/* Let's pass response string in user
-	 * context to demonstrate it's usage */
-	.user_ctx = NULL
-};
-
-static const httpd_uri_t OTA_jquery_3_4_1_min_js = {
-	.uri = "/jquery-3.4.1.min.js",
-	.method = HTTP_GET,
-	.handler = jquery_3_4_1_min_js_handler,
-	/* Let's pass response string in user
-	 * context to demonstrate it's usage */
-	.user_ctx = NULL
-};
-
 static const httpd_uri_t OTA_update = {
 	.uri = "/update",
 	.method = HTTP_POST,
@@ -840,20 +716,25 @@ static const httpd_uri_t OTA_status = {
 
 void start_rest_server(){
     if (server != NULL) {
-        httpd_stop(server);
-        server = NULL;
-        ESP_LOGW(TAG, "Previous HTTP server stopped before starting new one");
+        ESP_LOGI(TAG, "REST server already running");
+        return;
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.lru_purge_enable = true;
     config.server_port = 8080;
     config.ctrl_port = 32769; 
     config.stack_size = 8192;
-    //config.stack_size = 16384;
-    config.max_uri_handlers = 13;    
+    config.max_uri_handlers = 13;
+    // Allow several Home Assistant clients to be connected at once. The httpd
+    // is still single-threaded (handlers are serialized via select()), but more
+    // sockets means concurrent connections aren't dropped. LWIP default allows
+    // up to 10 sockets, leaving headroom for the listen + ctrl sockets.
+    config.max_open_sockets = 7;
+    // Reap stale/half-open connections so a stuck client can't tie up a socket
+    // forever (otherwise it would block other clients once all sockets are in use).
     config.lru_purge_enable = true;
-    config.max_open_sockets = 4;
+    config.recv_wait_timeout = 5;
+    config.send_wait_timeout = 5;
 
     // Start the httpd server
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
@@ -880,8 +761,6 @@ void register_server_uri_handlers(){
         httpd_register_uri_handler(server, &wifi_config_delete_uri);
 
         httpd_register_uri_handler(server, &OTA_index_html);
-		httpd_register_uri_handler(server, &OTA_favicon_ico);
-		httpd_register_uri_handler(server, &OTA_jquery_3_4_1_min_js);
 		httpd_register_uri_handler(server, &OTA_update);
 		httpd_register_uri_handler(server, &OTA_status);
         //httpd_register_basic_auth(server);

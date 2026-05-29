@@ -1,6 +1,6 @@
 #include <stdint.h>
-#include "driver/gpio.h"
-#include "esp_event.h"
+#include "esp_rom_sys.h"
+#include "esp_timer.h"
 
 #include "utils.h"
 
@@ -14,11 +14,8 @@ uint64_t micros() {
 
 void delayMicroseconds(uint32_t us)
 {
-    if(us){
-    uint32_t m = micros();
-    while( (micros() - m ) < us ){
-        asm(" nop");
-    }
+    if (us) {
+        esp_rom_delay_us(us);
     }
 }
 
@@ -37,7 +34,7 @@ void pinMode(gpio_num_t pin, gpio_mode_t mode) {
 }
 */
 
-void digitalWrite(uint8_t pin, uint8_t state) {
+void digitalWrite(gpio_num_t pin, uint8_t state) {
     if (state == HIGH) {
         GPIO_Set(pin);
     }

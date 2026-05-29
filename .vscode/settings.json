@@ -1,5 +1,10 @@
 {
   "C_Cpp.intelliSenseEngine": "default",
   "idf.flashType": "UART",
-  "idf.port": "/dev/tty.SLAB_USBtoUART"
+  "idf.port": "/dev/tty.SLAB_USBtoUART",
+  "files.associations": {
+    "functional": "c"
+  },
+  "idf.customExtraVars": {},
+  "idf.currentSetup": "/Users/thomas/.espressif/v6.0.1/esp-idf"
 }

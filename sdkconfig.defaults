@@ -1,0 +1,21 @@
+# Project defaults preserved across ESP-IDF migrations.
+# These are timing-critical for the cycle-based SWG bit-banging
+# (CLOCKS_*_us constants assume 240 cycles/us => 240 MHz) and for
+# the 1 ms FreeRTOS tick used by the display/key tasks.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_FREERTOS_HZ=1000
+
+# Core1 runs a tight bit-banging loop with interrupts disabled
+# (portDISABLE_INTERRUPTS) on CPU1. The interrupt watchdog must NOT
+# monitor CPU1, otherwise it panics with "Interrupt wdt timeout on CPU1".
+# CONFIG_ESP_INT_WDT_CHECK_CPU1 is not set
+
+# Core1 intentionally never yields CPU1, so the IDLE1 task never runs.
+# Do not let the task watchdog monitor IDLE1 (matches v4.4.8 behavior).
+# CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1 is not set
+
+# No outgoing TLS/HTTPS connections are made by this firmware (the web/OTA
+# server is plain HTTP). The mbedTLS certificate bundle (~64 KB of CA certs)
+# is therefore unused dead weight in the 1 MB app partition.
+# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE is not set

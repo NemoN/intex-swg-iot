@@ -33,6 +33,8 @@ Contains the freeRTOS task and all necessary support
 #define WIFI_MANAGER_H_INCLUDED
 
 #include <stdbool.h>
+#include "esp_netif.h"
+#include "esp_wifi.h"
 
 
 #ifdef __cplusplus
@@ -114,11 +116,11 @@ extern "C" {
 #define DEFAULT_HOSTNAME					"esp32"
 
 /** @brief Defines access point's bandwidth.
- *  Value: WIFI_BW_HT20 for 20 MHz  or  WIFI_BW_HT40 for 40 MHz
+ *  Value: WIFI_BW20 for 20 MHz
  *  20 MHz minimize channel interference but is not suitable for
  *  applications with high data speeds
  */
-#define DEFAULT_AP_BANDWIDTH 					WIFI_BW_HT20
+#define DEFAULT_AP_BANDWIDTH 					WIFI_BW20
 
 /** @brief Defines access point's channel.
  *  Channel selection is only effective when not connected to another AP.

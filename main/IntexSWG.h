@@ -20,6 +20,10 @@ extern "C" {
 #define CLOCKS_4_us 959923
 #define CLOCKS_5_us 1199904
 
+// ~50 ms in CPU cycles at 240 MHz. Used to throttle how often Core1 briefly
+// opens an interrupt window so CPU0 flash/NVS operations can be serviced.
+#define CLOCKS_50_ms 12000000
+
 
 #define clockPin        GPIO_NUM_19
 #define dataPin         GPIO_NUM_18
@@ -100,6 +104,9 @@ extern volatile bool delayedPowerOff;
 extern volatile bool readingMaster;
 extern volatile uint8_t selfCleanTime;
 
+/* Set by the REST API to make the SERVICE LED flash once per incoming request. */
+extern volatile bool serviceLedBlinkRequested;
+
 extern volatile uint8_t dataReceivedBuffer[128][2];
 
 //const std::string hostname = "INTEX-SWG";
@@ -107,7 +114,19 @@ extern volatile uint8_t dataReceivedBuffer[128][2];
 
 char getDisplayDigitFromCode(uint8_t code);
 uint8_t getCodeFromDisplayDigit(char displayDigit);
-void IRAM_ATTR machinePower(bool powerON);
+void machinePower(bool powerON);
+void notifyApiRequest(void);
+
+/* API command serialization (see IntexSWG.cpp).
+ * The REST handlers run in the single httpd task but mutate shared button
+ * state that RTOS_2/Core1 also use. To avoid one request clobbering an
+ * in-flight virtual key press, commands are queued here and applied one at a
+ * time by RTOS_2 when the previous command has finished. Each function returns
+ * true if the command was accepted (queued), false if the queue is full. */
+void apiCommandQueueInit(void);
+bool apiCommandPower(bool on);
+bool apiCommandStandby(void);
+bool apiCommandSelfClean(uint8_t selfCleanCode);
 
 
 #ifdef __cplusplus

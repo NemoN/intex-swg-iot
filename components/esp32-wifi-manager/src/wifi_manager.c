@@ -73,6 +73,7 @@ TimerHandle_t wifi_manager_shutdown_ap_timer = NULL;
 
 SemaphoreHandle_t wifi_manager_json_mutex = NULL;
 SemaphoreHandle_t wifi_manager_sta_ip_mutex = NULL;
+
 char *wifi_manager_sta_ip = NULL;
 uint16_t ap_num = MAX_AP_NUM;
 wifi_ap_record_t *accessp_records;
@@ -142,7 +143,6 @@ const int WIFI_MANAGER_REQUEST_DISCONNECT_BIT = BIT8;
 /* @brief When set, connection is in progress */
 const int WIFI_MANAGER_CONNECTING_BIT = BIT9;
 
-
 void wifi_manager_timer_retry_cb( TimerHandle_t xTimer ){
 	ESP_LOGI(TAG, "Retry Timer Tick! Sending ORDER_CONNECT_STA with reason CONNECTION_REQUEST_AUTO_RECONNECT");
 
@@ -180,7 +180,7 @@ void wifi_manager_start(){
 	ESP_ERROR_CHECK(nvs_sync_create()); /* semaphore for thread synchronization on NVS memory */
 
 	/* memory allocation */
-	wifi_manager_queue = xQueueCreate( 3, sizeof( queue_message) );
+	wifi_manager_queue = xQueueCreate( 10, sizeof( queue_message) );
 	wifi_manager_json_mutex = xSemaphoreCreateMutex();
 	accessp_records = (wifi_ap_record_t*)malloc(sizeof(wifi_ap_record_t) * MAX_AP_NUM);
 	accessp_json = (char*)malloc(MAX_AP_NUM * JSON_ONE_APP_SIZE + 4); /* 4 bytes for json encapsulation of "[\n" and "]\0" */
@@ -206,7 +206,7 @@ void wifi_manager_start(){
 	wifi_manager_shutdown_ap_timer = xTimerCreate( NULL, pdMS_TO_TICKS(WIFI_MANAGER_SHUTDOWN_AP_TIMER), pdFALSE, ( void * ) 0, wifi_manager_timer_shutdown_ap_cb);
 
 	/* start wifi manager task */
-	xTaskCreate(&wifi_manager, "wifi_manager", 4096, NULL, WIFI_MANAGER_TASK_PRIORITY, &task_wifi_manager);
+	xTaskCreate(&wifi_manager, "wifi_manager", 8192, NULL, WIFI_MANAGER_TASK_PRIORITY, &task_wifi_manager);
 }
 
 esp_err_t wifi_manager_save_sta_config(){
@@ -471,11 +471,15 @@ void wifi_manager_generate_acess_points_json(){
 }
 
 bool wifi_manager_lock_sta_ip_string(TickType_t xTicksToWait){
+
+	ESP_LOGD(TAG, "Warte auf wifi_manager_sta_ip_mutex...");
 	if(wifi_manager_sta_ip_mutex){
 		if( xSemaphoreTake( wifi_manager_sta_ip_mutex, xTicksToWait ) == pdTRUE ) {
+			ESP_LOGD(TAG, "Habe wifi_manager_sta_ip_mutex!");
 			return true;
 		}
 		else{
+			ESP_LOGW(TAG, "Konnte wifi_manager_sta_ip_mutex NICHT bekommen!");
 			return false;
 		}
 	}
@@ -489,7 +493,7 @@ void wifi_manager_unlock_sta_ip_string(){
 }
 
 void wifi_manager_safe_update_sta_ip_string(uint32_t ip){
-
+	//ESP_LOGI(TAG, "In wifi_manager_safe_update_sta_ip_string");
 	if(wifi_manager_lock_sta_ip_string(portMAX_DELAY)){
 
 		esp_ip4_addr_t ip4;
@@ -511,11 +515,14 @@ char* wifi_manager_get_sta_ip_string(){
 }
 
 bool wifi_manager_lock_json_buffer(TickType_t xTicksToWait){
+	ESP_LOGI(TAG, "Warte auf wifi_manager_json_mutex...");
 	if(wifi_manager_json_mutex){
 		if( xSemaphoreTake( wifi_manager_json_mutex, xTicksToWait ) == pdTRUE ) {
+			ESP_LOGI(TAG, "Habe wifi_manager_json_mutex!");
 			return true;
 		}
 		else{
+			ESP_LOGI(TAG, "Konnte wifi_manager_json_mutex NICHT bekommen!");
 			return false;
 		}
 	}
@@ -735,7 +742,9 @@ static void wifi_manager_event_handler(void* arg, esp_event_base_t event_base, i
 
 			BaseType_t send_result = wifi_manager_send_message(WM_EVENT_STA_LOST_IP, NULL);
 			ESP_LOGI(TAG, "Send WM_EVENT_STA_LOST_IP: %d", send_result == pdPASS);			
-
+			if (send_result != pdPASS) {
+				ESP_LOGE(TAG, "!!! Sende WM_EVENT_STA_LOST_IP fehlgeschlagen (Queue voll?)");
+			}
 			break;
 		}
 	}
@@ -936,7 +945,7 @@ void wifi_manager( void * pvParameters ){
 	ESP_ERROR_CHECK(esp_netif_dhcps_start(esp_netif_ap));
 
 	ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-	ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &ap_config));
+	ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
 	ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_AP, wifi_settings.ap_bandwidth));
 	ESP_ERROR_CHECK(esp_wifi_set_ps(wifi_settings.sta_power_save));
 
@@ -1045,7 +1054,7 @@ void wifi_manager( void * pvParameters ){
 					/* update config to latest and attempt connection */
 					wifi_config_t* config = wifi_manager_get_wifi_sta_config();
 					if(config && config->sta.ssid[0] != '\0') {
-						ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, config));
+						ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, config));
 
 						/* if there is a wifi scan in progress abort it first
 						Calling esp_wifi_scan_stop will trigger a SCAN_DONE event which will reset this bit */
@@ -1314,23 +1323,19 @@ void wifi_manager( void * pvParameters ){
 				break;
 
 			case WM_EVENT_STA_LOST_IP:
-				ESP_LOGW(TAG, "WM_EVENT_STA_LOST_IP received, triggering reconnect");
-				ESP_LOGI(TAG, "WM_EVENT_STA_LOST_IP: Main loop processing LOST_IP event");
-				
-				esp_err_t err = esp_wifi_disconnect();
-				if (err != ESP_OK) {
-					ESP_LOGE(TAG, "esp_wifi_disconnect failed: %s", esp_err_to_name(err));
-				} else {
-					ESP_LOGI(TAG, "esp_wifi_disconnect returned %s", esp_err_to_name(err));
+				ESP_LOGW(TAG, "WM_EVENT_STA_LOST_IP received, scheduling reconnect");
+				xEventGroupClearBits(wifi_manager_event_group, WIFI_MANAGER_WIFI_CONNECTED_BIT | WIFI_MANAGER_CONNECTING_BIT);
+				wifi_manager_safe_update_sta_ip_string((uint32_t)0);
+				if(wifi_manager_lock_json_buffer( portMAX_DELAY )){
+					wifi_manager_generate_ip_info_json( UPDATE_LOST_CONNECTION );
+					wifi_manager_unlock_json_buffer();
 				}
-
-				vTaskDelay(pdMS_TO_TICKS(1000));
-
-				err = esp_wifi_connect();
-				if (err != ESP_OK) {
-					ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(err));
-				} else {
-					ESP_LOGI(TAG, "esp_wifi_connect returned %s", esp_err_to_name(err));
+				{
+					esp_err_t err = esp_wifi_disconnect();
+					if (err != ESP_OK) {
+						ESP_LOGW(TAG, "esp_wifi_disconnect on lost IP failed: %s", esp_err_to_name(err));
+						xTimerStart( wifi_manager_retry_timer, (TickType_t)0 );
+					}
 				}
 
 				/* callback */
@@ -1338,7 +1343,6 @@ void wifi_manager( void * pvParameters ){
 					ESP_LOGI(TAG, "Calling callback for WM_EVENT_STA_LOST_IP (code=%d)", msg.code);
 					(*cb_ptr_arr[msg.code])(msg.param);
 				}
-				ESP_LOGI(TAG, "Finished handling WM_EVENT_STA_LOST_IP");
 				break;
 
 			case WM_ORDER_DISCONNECT_STA:
