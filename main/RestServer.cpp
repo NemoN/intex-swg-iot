@@ -3,7 +3,6 @@
 #include "esp_timer.h"
 #include <string>
 #include <string.h>
-#include <iostream>
 #include "cJSON.h"
 
 #include "IntexSWG.h"
@@ -16,7 +15,6 @@
 #include <sys/param.h>
 #include "esp_ota_ops.h"
 #include "freertos/event_groups.h"
-//#include "OTAServer.h"
 /********************************* OTA *******************************************/
 
 using namespace std;
@@ -763,5 +761,4 @@ void register_server_uri_handlers(){
         httpd_register_uri_handler(server, &OTA_index_html);
 		httpd_register_uri_handler(server, &OTA_update);
 		httpd_register_uri_handler(server, &OTA_status);
-        //httpd_register_basic_auth(server);
 }

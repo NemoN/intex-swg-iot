@@ -82,12 +82,12 @@ POST http://ip_addr:8080/api/v1/intex/swg/reboot
     }
 }
 
-- selfclean
+- selfclean (daily operating time in hours)
 
 POST http://ip_addr:8080/api/v1/intex/swg/self_clean
 {
     "data": {
-        "time": "{6|10|12}"
+        "time": "{6|10|14}"
     }
 }
 not testet yet

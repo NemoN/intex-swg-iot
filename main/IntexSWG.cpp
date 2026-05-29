@@ -25,7 +25,6 @@
 #include <inttypes.h>
 
 #include "RestServer.h"
-//#include "OTAServer.h"
 #include "IntexSWG.h"
 #include "TM1650.h"
 #include "utils.h"
@@ -623,22 +622,16 @@ void RTOS_2(void *p){
     
     unsigned long time1_keycode_api = 0;
     unsigned long time2_keycode_api = 0;
-    //unsigned long time1_power = 0;
-    //unsigned long time2_power = 0;
     unsigned long time1_displ = 0;
     unsigned long time2_displ = 0;
     unsigned long time1_delayed_keycode = 0;
     unsigned long time2_delayed_keycode = 0;
     unsigned long time1_delayed_off = 0;
     unsigned long time2_delayed_off = 0;    
-    //bool statusPowerLed = false;
-    //bool prevStatusPowerLed = false;
     bool statusDisplayLed = false;
     bool prevStatusDisplayLed = false;
-    //uint8_t powerBlinks = 0;
     uint8_t displayBlinks = 0;
-    /*time1_power = time2_power = */time1_displ = time2_displ = millis();
-    //powerBlinks = 0;
+    time1_displ = time2_displ = millis();
 
     while(1) { 
         if (removeWifiConfig) {            
@@ -647,25 +640,8 @@ void RTOS_2(void *p){
             reset_esp(NULL);
         }
         
-        // TODO: Supress booting status, or simulate according to the time it takes to start !!!
         // Check and update Power status ***********************************************************
-        /*
-        if (time2_power - time1_power < 1500) {        
-            statusPowerLed = (statusDigit3 & (0x01 << LED_POWER)) >> LED_POWER == 1 ? true : false;
-            if (prevStatusPowerLed != statusPowerLed) {
-                powerBlinks++;
-                prevStatusPowerLed = statusPowerLed;
-            }
-            time2_power = millis();
-        }
-        else {
-            powerStatus = (powerBlinks > 1) ? POWER_STATUS_BOOTING : (powerBlinks == 1) ? POWER_STATUS_ON : (statusDigit2 == DISP_DP) ? POWER_STATUS_STANDBY : POWER_STATUS_OFF;
-            powerBlinks = 0;
-            time1_power = time2_power = millis();
-        }
-        */
         powerStatus = (machineON) ? ((statusDigit2 == DISP_DP) ? POWER_STATUS_STANDBY : (statusDigit2 != DISP_BLANK) ? POWER_STATUS_ON : POWER_STATUS_BUS_ERROR) : POWER_STATUS_OFF;
-        //powerStatus = (powerBlinks == 1) ? POWER_STATUS_ON : (statusDigit2 == DISP_DP) ? POWER_STATUS_STANDBY : POWER_STATUS_OFF;
         // Check and update Power status ***********************************************************
 
         // Process one queued API command, but only while no other virtual key
