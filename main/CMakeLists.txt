@@ -1,5 +1,6 @@
-idf_component_register(SRCS "IntexSWG.cpp" 
+idf_component_register(SRCS "PIC16F88Backend.cpp" "TM1650Backend.cpp" "IntexSWG.cpp" 
                             "TM1650.cpp" 
+                            "PanelBackend.cpp"
                             "utils.cpp" 
                             "RestServer.cpp" 
                     INCLUDE_DIRS "."

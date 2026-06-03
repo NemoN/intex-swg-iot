@@ -1,0 +1,28 @@
+menu "Intex SWG"
+
+choice INTSWG_PANEL_BACKEND
+    prompt "Display panel backend"
+    default INTSWG_PANEL_BACKEND_TM1650
+    help
+        Select which display/protocol backend to build.
+
+config INTSWG_PANEL_BACKEND_TM1650
+    bool "TM1650 (16-pin display board)"
+
+config INTSWG_PANEL_BACKEND_PIC16F88
+    bool "PIC16F88 (18-pin display board, WIP)"
+
+endchoice
+
+config INTSWG_POWER_RELAY
+    bool "Enable power relay control"
+    default y
+    help
+        Enable if a relay is wired to powerRelayPin (GPIO 2) that controls
+        the SWG main board's power supply. When enabled the relay is opened
+        on boot and closed by Core1 after 1 s, allowing the main board to
+        be power-cycled via the API.
+        Disable if the SWG main board is always powered and the relay pin
+        is not connected; machineON will be set to true immediately on boot.
+
+endmenu

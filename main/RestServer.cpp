@@ -193,6 +193,22 @@ static esp_err_t debug_get_handler(httpd_req_t *req){
     cJSON_AddBoolToObject(data, "readingMaster", readingMaster);
     cJSON_AddBoolToObject(data, "sendingKeyCode", sendingKeyCode);
 
+    cJSON *picInjection = cJSON_CreateObject();
+    cJSON_AddBoolToObject(picInjection, "active", picInjectionActive);
+    cJSON_AddNumberToObject(picInjection, "phase", picInjectionCurrentPhase);
+    cJSON_AddNumberToObject(picInjection, "last_tm_button", picInjectionLastTmButton);
+    cJSON_AddNumberToObject(picInjection, "last_pic_button", picInjectionLastPicButton);
+    cJSON_AddNumberToObject(picInjection, "frames_started", picInjectionFramesStarted);
+    cJSON_AddNumberToObject(picInjection, "frames_completed", picInjectionFramesCompleted);
+    cJSON_AddNumberToObject(picInjection, "frames_repeated", picInjectionFramesRepeated);
+    cJSON_AddNumberToObject(picInjection, "timing_start_low_us", PIC_INJ_START_LOW_US);
+    cJSON_AddNumberToObject(picInjection, "timing_zero_high_us", PIC_INJ_ZERO_HIGH_US);
+    cJSON_AddNumberToObject(picInjection, "timing_one_high_us", PIC_INJ_ONE_HIGH_US);
+    cJSON_AddNumberToObject(picInjection, "timing_bit_low_us", PIC_INJ_BIT_LOW_US);
+    cJSON_AddNumberToObject(picInjection, "timing_end_low_us", PIC_INJ_END_LOW_US);
+    cJSON_AddNumberToObject(picInjection, "timing_repeat_gap_us", PIC_INJ_REPEAT_GAP_US);
+    cJSON_AddItemToObject(data, "pic_injection", picInjection);
+
     uint64_t time_us = esp_timer_get_time();
     uint32_t uptime_sec = (uint32_t)(time_us / 1000000ULL);
     cJSON_AddNumberToObject(data, "uptime_seconds", uptime_sec);
@@ -234,7 +250,15 @@ static esp_err_t general_info_post_handler(httpd_req_t *req){
         responseStatus = apiCommandPower(true);
     }
     else if (strcmp(power, "off") == 0) {
+#if defined(CONFIG_INTSWG_POWER_RELAY)
         responseStatus = apiCommandPower(false);
+#else
+        // No power relay wired: the SWG main board is always powered and
+        // cannot be switched off, only put into standby.
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "power off unavailable (no relay)");
+        return ESP_FAIL;
+#endif
     }
     else if (strcmp(power, "standby") == 0) {
         responseStatus = apiCommandStandby();

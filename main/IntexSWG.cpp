@@ -26,11 +26,10 @@
 
 #include "RestServer.h"
 #include "IntexSWG.h"
-#include "TM1650.h"
+#include "PanelBackend.h"
 #include "utils.h"
 
-// DIO=18, CLK=19, Digits=2, ActivateDisplay=true, Intensity=3, DisplayMode=4x8
-TM1650 module(dataDispPin, clockDispPin, 2, true, 3, TM1650_DISPMODE_4x8);
+static IPanelBackend* panelBackend = nullptr;
 
 /* @brief tag used for ESP serial console messages */
 static const char TAG[] = "main";
@@ -77,6 +76,15 @@ volatile int totalbytes = 0;
 volatile bool scrollIPRequested = false;
 char ipScrollBuffer[16];
 
+volatile bool picInjectionActive = false;
+volatile uint8_t picInjectionCurrentPhase = 0;
+volatile uint8_t picInjectionLastTmButton = 0x00;
+volatile uint8_t picInjectionLastPicButton = 0xFF;
+volatile uint32_t picInjectionFramesStarted = 0;
+volatile uint32_t picInjectionFramesCompleted = 0;
+volatile uint32_t picInjectionFramesRepeated = 0;
+volatile bool picReleaseProbeRequested = false;
+
 char getDisplayDigitFromCode(uint8_t code){
     switch (code) {
         case DISP_BLANK: return 0;
@@ -117,15 +125,19 @@ uint8_t getCodeFromDisplayDigit(char displayDigit){
 }
 
 void IRAM_ATTR machinePower(bool powerON){
-    if (powerON) { 
+    if (powerON) {
         machineON = true;
+#if defined(CONFIG_INTSWG_POWER_RELAY)
         delayMicroseconds(2500);
-        GPIO_Clear(powerRelayPin);        
+        GPIO_Clear(powerRelayPin);
+#endif
     }
     else {
+#if defined(CONFIG_INTSWG_POWER_RELAY)
         GPIO_Set(powerRelayPin);
-        machineON = false;
         delayMicroseconds(200);
+#endif
+        machineON = false;
         statusDigit1 = DISP_BLANK;
         statusDigit2 = DISP_BLANK;
         statusDigit3 = DISP_BLANK;
@@ -169,6 +181,12 @@ static bool apiCommandEnqueue(const api_command_t *cmd){
 }
 
 bool apiCommandPower(bool on){
+#if !defined(CONFIG_INTSWG_POWER_RELAY)
+    // Without a power relay the unit cannot be switched fully off.
+    if (!on) {
+        return false;
+    }
+#endif
     api_command_t cmd = { on ? API_CMD_POWER_ON : API_CMD_POWER_OFF, 0 };
     return apiCommandEnqueue(&cmd);
 }
@@ -199,7 +217,8 @@ inline void delayClocks(uint32_t clks){
 /**
  * @brief Task in charge of ESP32<->SWG serial BUS
  */
-void IRAM_ATTR Core1( void* p){
+#if !defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+static void IRAM_ATTR Core1Tm1650( void* p){
 
     vTaskDelay(pdMS_TO_TICKS(1000));
     // Core1 owns CPU1 with interrupts disabled for the whole bit-banging loop,
@@ -251,6 +270,10 @@ void IRAM_ATTR Core1( void* p){
             sdaValue = GPIO_IN_Get(dataPin);
         }
         sclValue = GPIO_IN_Get(clockPin);
+
+        if (panelBackend != nullptr) {
+            panelBackend->onBusSample(sdaValue, sclValue, clocks());
+        }
 
 
         // START Condition **********************************************************************************************************
@@ -407,6 +430,293 @@ void IRAM_ATTR Core1( void* p){
         }
     }
 }
+#endif
+
+#if defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+namespace {
+
+constexpr uint32_t kPicInjStartLowUs = PIC_INJ_START_LOW_US;
+constexpr uint32_t kPicInjZeroHighUs = PIC_INJ_ZERO_HIGH_US;
+constexpr uint32_t kPicInjOneHighUs = PIC_INJ_ONE_HIGH_US;
+constexpr uint32_t kPicInjBitLowUs = PIC_INJ_BIT_LOW_US;
+constexpr uint32_t kPicInjEndLowUs = PIC_INJ_END_LOW_US;
+constexpr uint32_t kPicInjRepeatGapUs = PIC_INJ_REPEAT_GAP_US;
+// Debounce gap between the press frame and the release frame of a single tap
+// (matches the 50 ms DEBOUNCE in the reference protocol implementation).
+constexpr uint32_t kPicInjTapGapUs = 50000;
+constexpr uint8_t kPicBtnSelfCleanByte = 0xF7;
+constexpr uint8_t kPicBtnReleaseByte = 0xFF;
+
+enum : uint8_t {
+    PIC_INJ_PHASE_START_LOW = 0,
+    PIC_INJ_PHASE_BIT_HIGH = 1,
+    PIC_INJ_PHASE_BIT_LOW = 2,
+    PIC_INJ_PHASE_END_LOW = 3,
+    PIC_INJ_PHASE_REPEAT_GAP = 4,
+    PIC_INJ_PHASE_TAP_GAP = 5,     // debounce gap before the release frame
+};
+
+struct PicInjectorState {
+    bool active = false;
+    uint8_t buttonByte = 0xFF;
+    uint16_t frame = 0xFF00;
+    int8_t bitPos = 15;
+    uint8_t phase = PIC_INJ_PHASE_START_LOW;
+    uint32_t phaseStart = 0;
+    // Tap mode: a button press is emulated as one press frame + debounce gap +
+    // one release frame, then idle (matches the reference demo). Used for all
+    // momentary buttons (power/standby). Self-clean instead holds via repeats.
+    bool tapMode = false;
+    bool releasePhase = false;
+    bool tapDone = false;
+};
+
+inline uint8_t mapTmButtonToPicButton(uint8_t tmBtn) {
+    switch (tmBtn) {
+        case BUTTON_POWER: return 0xFB;      // C / Power
+        case BUTTON_TIMER: return 0xFD;      // E / Timer
+        case BUTTON_LOCK: return 0xFE;       // W / Lock
+        case BUTTON_BOOST: return 0xEF;      // N / Boost
+        case BUTTON_SELF_CLEAN: return 0xF7; // S / Self-clean
+        default: return 0xFF;                // release
+    }
+}
+
+inline uint32_t picUsToClocks(uint32_t us) {
+    return us * 240;
+}
+
+inline void picSetPhase(PicInjectorState &st, uint8_t phase) {
+    st.phase = phase;
+    picInjectionCurrentPhase = phase;
+}
+
+void IRAM_ATTR picStartFrame(PicInjectorState &st, uint8_t picButton, uint32_t nowClocks) {
+    st.active = true;
+    picInjectionActive = true;
+    st.buttonByte = picButton;
+    picInjectionLastPicButton = picButton;
+    st.frame = ((uint16_t)picButton << 8) | (uint8_t)(~picButton);
+    st.bitPos = 15;
+    picSetPhase(st, PIC_INJ_PHASE_START_LOW);
+    st.phaseStart = nowClocks;
+    picInjectionFramesStarted = picInjectionFramesStarted + 1;
+    digitalWrite(clockPin, LOW);
+}
+
+// Returns true if injector currently owns clockPin, false if pass-through should be used.
+bool IRAM_ATTR picInjectionStep(PicInjectorState &st, uint8_t passthroughLevel, uint32_t nowClocks) {
+    bool wantInject = keyCodeSetByAPI && buttonStatus != 0x00;
+    picInjectionLastTmButton = buttonStatus;
+    uint8_t targetButton = mapTmButtonToPicButton(buttonStatus);
+
+    if (!wantInject || targetButton == 0xFF) {
+        st.active = false;
+        st.tapMode = false;
+        st.releasePhase = false;
+        st.tapDone = false;
+        picInjectionActive = false;
+        picInjectionCurrentPhase = PIC_INJ_PHASE_START_LOW;
+        digitalWrite(clockPin, passthroughLevel);
+        return false;
+    }
+
+    // A momentary tap (press + release) has already been delivered; stay idle
+    // (passthrough) for the rest of the key-hold window so the press is not
+    // repeated and re-toggled.
+    if (st.tapDone) {
+        digitalWrite(clockPin, passthroughLevel);
+        return false;
+    }
+
+    bool isHold = (targetButton == kPicBtnSelfCleanByte);
+
+    // Start a fresh press when idle or when the requested button changed
+    // (but not while we are emitting the release frame of a tap).
+    if (!st.active || (!st.releasePhase && st.buttonByte != targetButton)) {
+        st.tapMode = !isHold;
+        st.releasePhase = false;
+        picStartFrame(st, targetButton, nowClocks);
+        return true;
+    }
+
+    uint32_t elapsed = nowClocks - st.phaseStart;
+
+    switch (st.phase) {
+        case PIC_INJ_PHASE_START_LOW:
+            if (elapsed >= picUsToClocks(kPicInjStartLowUs)) {
+                picSetPhase(st, PIC_INJ_PHASE_BIT_HIGH);
+                st.phaseStart = nowClocks;
+                digitalWrite(clockPin, HIGH);
+            }
+            break;
+
+        case PIC_INJ_PHASE_BIT_HIGH: {
+            uint32_t highDur = ((st.frame >> st.bitPos) & 0x01)
+                ? picUsToClocks(kPicInjOneHighUs)
+                : picUsToClocks(kPicInjZeroHighUs);
+            if (elapsed >= highDur) {
+                picSetPhase(st, PIC_INJ_PHASE_BIT_LOW);
+                st.phaseStart = nowClocks;
+                digitalWrite(clockPin, LOW);
+            }
+            break;
+        }
+
+        case PIC_INJ_PHASE_BIT_LOW:
+            if (elapsed >= picUsToClocks(kPicInjBitLowUs)) {
+                st.bitPos--;
+                st.phaseStart = nowClocks;
+                if (st.bitPos >= 0) {
+                    picSetPhase(st, PIC_INJ_PHASE_BIT_HIGH);
+                    digitalWrite(clockPin, HIGH);
+                } else {
+                    picSetPhase(st, PIC_INJ_PHASE_END_LOW);
+                    digitalWrite(clockPin, LOW);
+                }
+            }
+            break;
+
+        case PIC_INJ_PHASE_END_LOW:
+            if (elapsed >= picUsToClocks(kPicInjEndLowUs)) {
+                picInjectionFramesCompleted = picInjectionFramesCompleted + 1;
+                digitalWrite(clockPin, HIGH);
+                st.phaseStart = nowClocks;
+                if (st.tapMode && st.releasePhase) {
+                    // Release frame finished → single tap complete. Stay idle
+                    // (passthrough) until the key-hold window ends.
+                    st.tapDone = true;
+                    st.active = false;
+                    picInjectionActive = false;
+                    picInjectionCurrentPhase = PIC_INJ_PHASE_START_LOW;
+                    digitalWrite(clockPin, passthroughLevel);
+                    return false;
+                }
+                // Press frame finished: tap → debounce gap before release;
+                // hold (self-clean) → repeat gap before resending.
+                picSetPhase(st, st.tapMode ? PIC_INJ_PHASE_TAP_GAP
+                                           : PIC_INJ_PHASE_REPEAT_GAP);
+            }
+            break;
+
+        case PIC_INJ_PHASE_TAP_GAP:
+            // Debounce, then emit one release frame to complete the tap.
+            if (elapsed >= picUsToClocks(kPicInjTapGapUs)) {
+                st.releasePhase = true;
+                picStartFrame(st, kPicBtnReleaseByte, nowClocks);
+            }
+            break;
+
+        case PIC_INJ_PHASE_REPEAT_GAP:
+            // Repeat while virtual key press is held by RTOS_2 timing logic.
+            if (elapsed >= picUsToClocks(kPicInjRepeatGapUs)) {
+                picInjectionFramesRepeated = picInjectionFramesRepeated + 1;
+                picStartFrame(st, st.buttonByte, nowClocks);
+            }
+            break;
+
+        default:
+            st.active = false;
+            picInjectionActive = false;
+            picInjectionCurrentPhase = PIC_INJ_PHASE_START_LOW;
+            digitalWrite(clockPin, passthroughLevel);
+            return false;
+    }
+
+    return true;
+}
+
+}  // namespace
+
+// Send a single button-release frame [0xFF][0x00] synchronously on TO_MAIN.
+// Blocks for ~11 ms. Used to prompt the main board to refresh the display.
+static void IRAM_ATTR sendPicReleaseSync(void) {
+    constexpr uint16_t kReleaseFrame = 0xFF00U;
+    digitalWrite(clockPin, LOW);
+    delayClocks(picUsToClocks(kPicInjStartLowUs));
+    for (int8_t i = 15; i >= 0; i--) {
+        uint32_t highDur = ((kReleaseFrame >> i) & 1u)
+            ? picUsToClocks(kPicInjOneHighUs)
+            : picUsToClocks(kPicInjZeroHighUs);
+        digitalWrite(clockPin, HIGH);
+        delayClocks(highDur);
+        digitalWrite(clockPin, LOW);
+        delayClocks(picUsToClocks(kPicInjBitLowUs));
+    }
+    digitalWrite(clockPin, HIGH);
+}
+
+static void IRAM_ATTR Core1Pic16f88(void* p) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    machinePower(true);
+
+    portDISABLE_INTERRUPTS();
+    PicInjectorState injector;
+    uint32_t lastIntWindowClocks = clocks();
+
+    while (1) {
+        if (otaUpdating || removeWifiConfig || !machineON || wifiReconnecting) {
+            readingMaster = false;
+            portENABLE_INTERRUPTS();
+            while (otaUpdating || removeWifiConfig || !machineON || wifiReconnecting) {
+                feedTheDog();
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            portDISABLE_INTERRUPTS();
+            injector.active = false;
+            picInjectionActive = false;
+            picInjectionCurrentPhase = PIC_INJ_PHASE_START_LOW;
+            digitalWrite(clockPin, HIGH);
+        }
+
+        readingMaster = true;
+
+        uint8_t mainDataLevel = GPIO_IN_Get(dataPin);       // FROM_MAIN
+        uint8_t displayClockLevel = GPIO_IN_Get(clockDispPin); // FROM_DISP
+        uint32_t now = clocks();
+
+        uint8_t displayOutputLevel = panelBackend != nullptr
+            ? panelBackend->getDisplayOutputLevel(mainDataLevel, now)
+            : mainDataLevel;
+        digitalWrite(dataDispPin, displayOutputLevel);
+
+        bool injecting = picInjectionStep(injector, displayClockLevel, now);
+        uint8_t outClockLevel = injecting ? GPIO_IN_Get(clockPin) : displayClockLevel;
+
+        if (panelBackend != nullptr) {
+            panelBackend->onBusSample(mainDataLevel, outClockLevel, now);
+        }
+
+        // Send release probe synchronously when requested and not mid-injection.
+        if (picReleaseProbeRequested && !injecting) {
+            picReleaseProbeRequested = false;
+            sendPicReleaseSync();
+        }
+
+        // Same cooperative interrupt window strategy used by the TM1650 path.
+        // Never open it mid-frame: an ISR preemption would freeze the output
+        // line and stretch the current bit, corrupting the frame the display
+        // panel decodes (the cause of boot-animation flicker).
+        bool displayBusy = panelBackend != nullptr && panelBackend->isDisplayBusy();
+        if (!injecting && !displayBusy) {
+            uint32_t nowClocks = clocks();
+            if ((nowClocks - lastIntWindowClocks) > CLOCKS_50_ms) {
+                lastIntWindowClocks = nowClocks;
+                portENABLE_INTERRUPTS();
+                portDISABLE_INTERRUPTS();
+            }
+        }
+    }
+}
+#endif
+
+void IRAM_ATTR Core1(void* p) {
+#if defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+    Core1Pic16f88(p);
+#else
+    Core1Tm1650(p);
+#endif
+}
 
 /**
  * @brief Task that shows a countdown en restarts ESP32 when wifi configuration has been saved successfully
@@ -444,9 +754,32 @@ void reset_esp(void *pvParameter){
 }
 
 void sendDataToDisplay(uint8_t digit, uint8_t value, uint8_t intensity){
-    if (!keyCodeSetByAPI) buttonStatus = module.getButtonPressedCode();
-    module.setupDisplay(displayON, intensity);
-    module.setSegments(value, (digit & 0b111) >> 1);    
+    if (panelBackend == nullptr) {
+        return;
+    }
+    buttonStatus = panelBackend->readButtonCode(keyCodeSetByAPI, buttonStatus);
+    panelBackend->writeDisplay(digit, value, intensity, displayON);
+}
+
+// Ends an override animation. On PIC16F88 the main board is event-driven and
+// may be silent (standby), so the panel latches the last frame we sent. Leaving
+// it blank would hide the standby ".": instead show the last decoded main-board
+// state (or the assumed-standby default) so something sensible remains until the
+// main board transmits again. TM1650 drives its chip directly, so just clear it.
+static void finishOverrideDisplay(){
+#if defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+    sendDataToDisplay(DIGIT1, statusDigit1, displayIntensity);
+    sendDataToDisplay(DIGIT2, statusDigit2, displayIntensity);
+    sendDataToDisplay(DIGIT3, statusDigit3, statusLedsIntensity);
+    vTaskDelay(pdMS_TO_TICKS(60));  // let the serializer emit the final frame
+#else
+    sendDataToDisplay(DIGIT1, DISP_BLANK, displayIntensity);
+    sendDataToDisplay(DIGIT2, DISP_BLANK, displayIntensity);
+    sendDataToDisplay(DIGIT3, DISP_BLANK, statusLedsIntensity);
+#endif
+    if (panelBackend != nullptr) {
+        panelBackend->setDisplayOverride(false);
+    }
 }
 
 /**
@@ -456,6 +789,10 @@ void sendDataToDisplay(uint8_t digit, uint8_t value, uint8_t intensity){
  *        Called from RTOS_1 so it shares the display bus with normal mirroring.
  */
 void startupAnimation(){
+    if (panelBackend != nullptr) {
+        panelBackend->setDisplayOverride(true);
+    }
+
     // 1. Round-robin all status LEDs (DIGIT3 carries the 8 LED bits).
     for (int round = 0; round < 2; round++) {
         for (int led = 0; led < 8; led++) {
@@ -481,10 +818,7 @@ void startupAnimation(){
     }
     vTaskDelay(pdMS_TO_TICKS(300));
 
-    // Clear before returning to normal status mirroring.
-    sendDataToDisplay(DIGIT1, DISP_BLANK, displayIntensity);
-    sendDataToDisplay(DIGIT2, DISP_BLANK, displayIntensity);
-    sendDataToDisplay(DIGIT3, DISP_BLANK, statusLedsIntensity);
+    finishOverrideDisplay();
 }
 
 /**
@@ -495,6 +829,10 @@ void startupAnimation(){
  *        Called from RTOS_1 so it shares the display bus with normal mirroring.
  */
 void scrollIPOnDisplay(const char *ip){
+    if (panelBackend != nullptr) {
+        panelBackend->setDisplayOverride(true);
+    }
+
     uint8_t codes[24];
     int n = 0;
 
@@ -527,9 +865,7 @@ void scrollIPOnDisplay(const char *ip){
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
-    // Clear before returning to normal status mirroring.
-    sendDataToDisplay(DIGIT1, DISP_BLANK, displayIntensity);
-    sendDataToDisplay(DIGIT2, DISP_BLANK, displayIntensity);
+    finishOverrideDisplay();
 }
 
 /**
@@ -553,13 +889,35 @@ void RTOS_1(void *p){
             scrollIPOnDisplay(ipScrollBuffer);
         }
 
-        // Arm a short SERVICE-LED flash when an API request came in.
+        // Flash the SERVICE LED once per incoming API request.
         if (serviceLedBlinkRequested) {
             serviceLedBlinkRequested = false;
+#if defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+            // PIC: the display is passthrough-driven in normal mode, so briefly
+            // override it to show the current state with the SERVICE LED set,
+            // then release back to passthrough (finishOverrideDisplay restores
+            // the latest decoded state).
+            if (panelBackend != nullptr) {
+                panelBackend->setDisplayOverride(true);
+                sendDataToDisplay(DIGIT1, statusDigit1, displayIntensity);
+                sendDataToDisplay(DIGIT2, statusDigit2, displayIntensity);
+                sendDataToDisplay(DIGIT3, (uint8_t)(statusDigit3 | (1u << LED_SERVICE)), statusLedsIntensity);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                finishOverrideDisplay();
+            }
+#else
             serviceBlinking = true;
             serviceBlinkStart = millis();
+#endif
         }
 
+#if defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+        // PIC mirrors nothing in normal mode (passthrough drives the panel);
+        // just idle so the watchdog is fed and IP-scroll/blink stay responsive.
+        (void)serviceBlinking;
+        (void)serviceBlinkStart;
+        vTaskDelay(pdMS_TO_TICKS(20));
+#else
         // Toggle the SERVICE LED bit for ~150 ms so a single request produces
         // one visible blink regardless of the LED's underlying state.
         uint8_t digit3 = statusDigit3;
@@ -575,9 +933,10 @@ void RTOS_1(void *p){
         vTaskDelay(pdMS_TO_TICKS(10));
         sendDataToDisplay(DIGIT2, statusDigit2, displayIntensity);
         vTaskDelay(pdMS_TO_TICKS(10));
-        sendDataToDisplay(DIGIT3, digit3, statusLedsIntensity);           
+        sendDataToDisplay(DIGIT3, digit3, statusLedsIntensity);
         vTaskDelay(pdMS_TO_TICKS(10));
-        
+#endif
+
         taskYIELD();
     }
 }
@@ -631,6 +990,7 @@ void RTOS_2(void *p){
     bool statusDisplayLed = false;
     bool prevStatusDisplayLed = false;
     uint8_t displayBlinks = 0;
+    bool probeScheduled = false;
     time1_displ = time2_displ = millis();
 
     while(1) { 
@@ -640,8 +1000,17 @@ void RTOS_2(void *p){
             reset_esp(NULL);
         }
         
+        // After startup animation (~8 s), send one button-release probe if the
+        // main board hasn't sent any display frames yet (event-driven protocol).
+#if defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+        if (!probeScheduled && machineON && millis() > 8000 && statusDigit2 == DISP_BLANK) {
+            picReleaseProbeRequested = true;
+            probeScheduled = true;
+        }
+#endif
+
         // Check and update Power status ***********************************************************
-        powerStatus = (machineON) ? ((statusDigit2 == DISP_DP) ? POWER_STATUS_STANDBY : (statusDigit2 != DISP_BLANK) ? POWER_STATUS_ON : POWER_STATUS_BUS_ERROR) : POWER_STATUS_OFF;
+        powerStatus = (machineON) ? ((statusDigit2 == DISP_DP) ? POWER_STATUS_STANDBY : (statusDigit2 != DISP_BLANK) ? POWER_STATUS_ON : POWER_STATUS_BOOTING) : POWER_STATUS_OFF;
         // Check and update Power status ***********************************************************
 
         // Process one queued API command, but only while no other virtual key
@@ -661,8 +1030,9 @@ void RTOS_2(void *p){
                                 break;
                             case POWER_STATUS_STANDBY:
                             case POWER_STATUS_BUS_ERROR:
+                            case POWER_STATUS_BOOTING:
                                 keyCodeSetByAPI = true;
-                                virtualPressButtonTime = 250;
+                                virtualPressButtonTime = PIC_SINGLE_PRESS_MS;
                                 buttonStatus = BUTTON_POWER;
                                 break;
                             default:
@@ -674,7 +1044,7 @@ void RTOS_2(void *p){
                             case POWER_STATUS_BOOTING:
                             case POWER_STATUS_ON:
                                 keyCodeSetByAPI = true;
-                                virtualPressButtonTime = 250;
+                                virtualPressButtonTime = PIC_SINGLE_PRESS_MS;
                                 buttonStatus = BUTTON_POWER;
                                 delayedPowerOff = true;
                                 break;
@@ -687,11 +1057,11 @@ void RTOS_2(void *p){
                         break;
                     case API_CMD_STANDBY:
                         switch (powerStatus) {
-                            case POWER_STATUS_BOOTING:
                             case POWER_STATUS_ON:
                             case POWER_STATUS_BUS_ERROR:
+                            case POWER_STATUS_BOOTING:
                                 keyCodeSetByAPI = true;
-                                virtualPressButtonTime = 250;
+                                virtualPressButtonTime = PIC_SINGLE_PRESS_MS;
                                 buttonStatus = BUTTON_POWER;
                                 break;
                             case POWER_STATUS_OFF:
@@ -763,6 +1133,9 @@ void RTOS_2(void *p){
                 // TODO: Manage programming macro
                 keyCodeSetByAPI = false;
                 time1_keycode_api = time2_keycode_api = 0;
+#if defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+                picReleaseProbeRequested = true;
+#endif
             } 
             else {
                 time2_keycode_api = millis();
@@ -863,9 +1236,10 @@ void startCore0b(void){ // Task that controls virtual key press (API), power sta
         tskIDLE_PRIORITY + 3,   // Priority
         &xHandle2,              // Variable to hold the task's data structure.
         0);                     // Core 0
-    
-    module.clearDisplay();
-    module.setupDisplay(true, 4);
+
+    if (panelBackend != nullptr) {
+        panelBackend->onDisplayTaskStart();
+    }
 }
 
 // Function that creates the superloop Core1 to be pinned at Core 1
@@ -939,8 +1313,27 @@ void cb_connection_ko(void *pvParameter){
 
 extern "C" void app_main(void){
 
+    panelBackend = getPanelBackend();
+    ESP_LOGI(TAG, "Panel backend: %s", panelBackend->name());
+
     apiCommandQueueInit();
 
+#if defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+    // PIC16F88 board wiring (as in protocol demos):
+    // FROM_MAIN=dataPin(input), TO_DISP=dataDispPin(output),
+    // FROM_DISP=clockDispPin(input), TO_MAIN=clockPin(output).
+    pinMode(dataPin, GPIO_MODE_INPUT);
+    GPIO_Set(dataPin);
+
+    pinMode(clockDispPin, GPIO_MODE_INPUT);
+    GPIO_Set(clockDispPin);
+
+    pinMode(clockPin, GPIO_MODE_OUTPUT);
+    GPIO_Set(clockPin);
+
+    pinMode(dataDispPin, GPIO_MODE_OUTPUT);
+    GPIO_Set(dataDispPin);
+#else
     pinMode(dataPin, GPIO_MODE_INPUT);
     GPIO_Set(dataPin);
 
@@ -949,9 +1342,22 @@ extern "C" void app_main(void){
 
     pinMode(dataDispPin, GPIO_MODE_OUTPUT);
     pinMode(clockDispPin, GPIO_MODE_OUTPUT);
+#endif
 
     pinMode(powerRelayPin, GPIO_MODE_OUTPUT);
-    GPIO_Set(powerRelayPin);
+#if defined(CONFIG_INTSWG_POWER_RELAY)
+    GPIO_Set(powerRelayPin);   // open relay; Core1 closes it after 1 s
+#else
+    GPIO_Clear(powerRelayPin); // relay pin unused — drive low (inactive)
+    machineON = true;          // SWG is always powered; treat as on from boot
+#endif
+
+#if defined(CONFIG_INTSWG_PANEL_BACKEND_PIC16F88)
+    // Event-driven main board: until it transmits a frame we cannot know the
+    // real state. Assume standby (".") so the display and API report something
+    // sensible; the first decoded frame corrects it (e.g. ON when transmitting).
+    statusDigit2 = DISP_DP;
+#endif
 
     /* Print chip information */
     esp_chip_info_t chip_info;

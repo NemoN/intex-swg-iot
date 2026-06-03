@@ -15,6 +15,7 @@
 #define TM1650_CMD_ADDRESS  0x68
 
 #include <stdio.h>
+#include "driver/gpio.h"
 
 class TM1650
 {

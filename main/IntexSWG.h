@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+#include "driver/gpio.h"
+
 #define STACK_SIZE 4096
 
 #define CLOCKS_1_ns 240
@@ -80,6 +82,19 @@ extern "C" {
 #define BUTTON_LOCK         0x4E
 #define BUTTON_SELF_CLEAN   0x74
 
+// Virtual single-press duration: a normal tap that toggles standby/on.
+// ~20 ms (one frame) is too short to register reliably; the real long-press
+// that fully powers the unit off is several seconds, so 250 ms is safely a tap.
+#define PIC_SINGLE_PRESS_MS  250
+
+// PIC16F88 virtual button injection timing (microseconds)
+#define PIC_INJ_START_LOW_US        200
+#define PIC_INJ_ZERO_HIGH_US        200
+#define PIC_INJ_ONE_HIGH_US         800
+#define PIC_INJ_BIT_LOW_US          200
+#define PIC_INJ_END_LOW_US          200
+#define PIC_INJ_REPEAT_GAP_US       2000
+
 extern volatile bool displayON;
 extern volatile bool machineON;
 extern volatile uint8_t displayIntensity; // (range 0-7)
@@ -108,6 +123,16 @@ extern volatile uint8_t selfCleanTime;
 extern volatile bool serviceLedBlinkRequested;
 
 extern volatile uint8_t dataReceivedBuffer[128][2];
+
+// PIC16F88 injection debug telemetry (updated by Core1 PIC backend path).
+extern volatile bool picInjectionActive;
+extern volatile uint8_t picInjectionCurrentPhase;
+extern volatile uint8_t picInjectionLastTmButton;
+extern volatile uint8_t picInjectionLastPicButton;
+extern volatile uint32_t picInjectionFramesStarted;
+extern volatile uint32_t picInjectionFramesCompleted;
+extern volatile uint32_t picInjectionFramesRepeated;
+extern volatile bool picReleaseProbeRequested;
 
 //const std::string hostname = "INTEX-SWG";
 

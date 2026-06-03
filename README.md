@@ -28,9 +28,11 @@ This is a fork of [jressel01/intex-swg-iot](https://github.com/jressel01/intex-s
 | **Reliable API under load** | Commands (`power` on/off/standby, `self_clean`) are placed on a queue and applied one at a time, so parallel requests (e.g. several Home Assistant polls) can't overwrite an in-flight virtual key press. |
 | **HTTP server tuned for multiple clients** | More concurrent sockets, stale-connection purging and receive/send timeouts. |
 | **Display features** | The IP address scrolls across the display once after WiFi connects, plus a short startup animation on boot. |
-| **Service-LED feedback** | The service LED briefly blinks whenever an API request is received. |
+| **Service-LED feedback** | The service LED briefly blinks whenever an API request is received (on both backends). |
 | **Smaller firmware** | Removed unused embedded assets (jQuery, favicon, certificate bundle) to free flash space. |
 | **Hardening** | Safer debug handler (no large stack buffer), bounded string formatting and compact JSON responses. |
+| **Panel backend selection** | Compile-time backend switch in menuconfig: `TM1650` (default, 16-pin) and `PIC16F88` (18-pin). The PIC16F88 path now supports bus passthrough, display mirroring, the boot/IP animations, REST power on/standby and service-LED feedback. |
+| **Optional power relay (new)** | The GPIO 2 power relay is a menuconfig option. Without a relay the SWG main board is always powered, so only `standby` is available (not a full `off`). |
 
 ## Build (ESP-IDF 6.x)
 
@@ -56,10 +58,28 @@ idf.py flash
 > [!IMPORTANT]
 > The CPU must run at **240 MHz** — the Core1 bus timing depends on it.
 
+Optional: choose the panel backend in menuconfig:
+
+```bash
+idf.py menuconfig
+```
+
+Both options live under `Component config ---> Intex SWG`:
+
+- **Display panel backend** — `TM1650` (default) or `PIC16F88`.
+- **Enable power relay control** — on by default. Disable it if no relay is
+  wired to GPIO 2 (the SWG is then treated as always powered; `off` is rejected).
+
 ## Hardware
 
-You need an SWG with the **16-pin (TM1650)** chip on the display board. It will
-**not** work with the 18-pin PIC (work in progress).
+Default and production-ready path is SWG with the **16-pin (TM1650)** chip on
+the display board.
+
+The **18-pin PIC16F88** path is also a compile-time selectable backend. It
+mirrors the display, passes the bus through, plays the boot/IP animations and
+accepts REST power `on`/`standby`. Self-clean and a few edge cases are still
+**work in progress**. Because the main board only transmits on state changes,
+the status reads as standby (`.`) after boot until the first frame is decoded.
 
 The original cable between the display board and the main board now goes from the
 display board to the ESP32 board. You'll need a new cable to connect the ESP32
@@ -85,7 +105,7 @@ connector already fits; only the other connector needs swapping.
 | GPIO 18 | SWG main board data |
 | GPIO 17 | Display board clock |
 | GPIO 16 | Display board data |
-| GPIO 2  | Relay module control |
+| GPIO 2 | Relay module control |
 
 PCB layout: [jingsno/intex-swg-pcb-TM1650](https://github.com/jingsno/intex-swg-pcb-TM1650)
 (change the relay pin from GPIO0 to GPIO2).
@@ -125,7 +145,9 @@ Content-Type: application/json
 }
 ```
 
-`power` accepts `on`, `off` or `standby`.
+`power` accepts `on`, `off` or `standby`. `off` requires the power relay
+(see the *Enable power relay control* menuconfig option); without it the
+request is rejected and only `standby` is available.
 
 ### Self-clean
 
@@ -213,6 +235,6 @@ GET http://<ip_addr>:8080/api/v1/intex/swg/debug
 
 2. Open the OTA web interface in a browser and upload the new firmware:
 
-   ```
+  ```text
    http://<ip_addr>:8080
    ```
