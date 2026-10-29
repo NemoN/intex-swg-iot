@@ -10,6 +10,8 @@ This is a fork of [jressel01/intex-swg-iot](https://github.com/jressel01/intex-s
 - Created a new Home Assistant plugin: [NemoN/ha-intex-swg](https://github.com/NemoN/ha-intex-swg) (HACS).
 - Ported the firmware to **ESP-IDF 6.x** (branch [`esp-idf-6.x`](#build-esp-idf-6x)).
 
+<a href="https://www.buymeacoffee.com/nemon" target="_blank"><img src="https://www.buymeacoffee.com/assets/img/custom_images/white_img.png" alt="Buy Me A Coffee" style="height: auto !important;width: auto !important;" ></a>
+
 ## Contents
 
 - [What's new on `esp-idf-6.x`](#whats-new-on-esp-idf-6x)
